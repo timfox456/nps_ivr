@@ -1,2 +1,2 @@
-# ops_ivr
+# nps_ivr
 IVR syste for NPS
