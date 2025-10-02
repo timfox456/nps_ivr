@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Twilio
-    twilio_auth_token: Optional[str] = None  # Optional signature validation
+    twilio_sid: Optional[str] = None
+    twilio_auth_token: Optional[str] = None
+    twilio_phone_number: Optional[str] = None
 
     # OpenAI
     openai_api_key: Optional[str] = None

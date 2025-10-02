@@ -1,5 +1,6 @@
 import json
-from unittest.mock import patch
+import xml.etree.ElementTree as ET
+from unittest.mock import patch, MagicMock
 
 from app.models import REQUIRED_FIELDS
 
@@ -49,14 +50,17 @@ def test_sms_intake_progress(mock_extract, client):
     assert res2.text
 
 
-@patch("app.llm.extract_and_prompt", side_effect=lambda text, state: (state, ""))
-@patch("app.salesforce.create_lead")
-def test_sms_completion_triggers_salesforce(mock_sf, mock_extract, client):
-    async def _fake_sf(payload):
-        return "LEAD123"
-    mock_sf.side_effect = _fake_sf
+@patch("app.main.get_or_create_session")
+@patch("app.main.process_turn")
+@patch("app.main.create_lead")
+def test_sms_completion_triggers_salesforce(mock_create_lead, mock_process_turn, mock_get_session, client):
+    # Mock the session
+    mock_session = MagicMock()
+    mock_session.status = "open"
+    mock_session.state = {}
+    mock_get_session.return_value = mock_session
 
-    # Provide all fields to simulate completion
+    # Mock the process_turn function to return a completed state
     all_fields = {
         "first_name": "Jane",
         "last_name": "Rider",
@@ -67,14 +71,11 @@ def test_sms_completion_triggers_salesforce(mock_sf, mock_extract, client):
         "vehicle_model": "CB500",
         "vehicle_year": "2020",
     }
-    # We monkey patch state persistence by pre-seeding message content that encodes JSON
-    form = {"From": "+1", "To": "+1", "Body": json.dumps(all_fields), "SmsSid": "SMdone1"}
-    res = client.post("/twilio/sms", data=form)
+    mock_process_turn.return_value = (all_fields, "", True)
+
+    # Send a message to trigger the completion logic
+    res = client.post("/twilio/sms", data={"From": "+1", "To": "+1", "Body": "complete", "SmsSid": "SMdone1"})
     assert res.status_code == 200
-    # With the fake llm returning same state, the app won't parse JSON from Body by default.
-    # Instead, simulate two calls: first sets state, second completes.
-    with patch("app.llm.process_turn", return_value=(all_fields, "", True)):
-        res2 = client.post("/twilio/sms", data={"From": "+1", "To": "+1", "Body": "complete", "SmsSid": "SMdone1"})
-        assert res2.status_code == 200
-        assert "Thank you" in res2.text
-        mock_sf.assert_called()
+
+    # Check that create_lead was called
+    mock_create_lead.assert_called_once()

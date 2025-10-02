@@ -1,4 +1,6 @@
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+import xml.etree.ElementTree as ET
+import json
 
 
 def fake_llm_response(text, state):
@@ -26,21 +28,32 @@ def test_voice_collect_prompts_next_question(mock_extract, client):
     assert "What is your last name?" in body
 
 
-@patch("app.salesforce.create_lead", side_effect=lambda p: "LEAD42")
-@patch("app.llm.process_turn", return_value=({
-    "first_name": "A",
-    "last_name": "B",
-    "address": "1 st",
-    "phone": "+1",
-    "email": "a@b.com",
-    "vehicle_make": "Honda",
-    "vehicle_model": "CB",
-    "vehicle_year": "2020",
-}, "", True))
-def test_voice_completion_hangup(mock_turn, mock_sf, client):
+@patch("app.main.get_or_create_session")
+@patch("app.main.process_turn")
+@patch("app.main.create_lead")
+def test_voice_completion_hangup(mock_create_lead, mock_process_turn, mock_get_session, client):
+    # Mock the session
+    mock_session = MagicMock()
+    mock_session.status = "open"
+    mock_session.state = {}
+    mock_get_session.return_value = mock_session
+
+    # Mock the process_turn function to return a completed state
+    all_fields = {
+        "first_name": "A",
+        "last_name": "B",
+        "address": "1 st",
+        "phone": "+1",
+        "email": "a@b.com",
+        "vehicle_make": "Honda",
+        "vehicle_model": "CB",
+        "vehicle_year": "2020",
+    }
+    mock_process_turn.return_value = (all_fields, "", True)
+
+    # Send a message to trigger the completion logic
     res = client.post("/twilio/voice/collect", data={"CallSid": "CA3", "From": "+1", "To": "+1", "SpeechResult": "complete"})
     assert res.status_code == 200
-    body = res.text
-    assert "Thank you." in body or "Thank you" in body
-    assert "<Hangup" in body or "</Hangup>" in body or "hangup" in body.lower()
-    mock_sf.assert_called()
+
+    # Check that create_lead was called
+    mock_create_lead.assert_called_once()

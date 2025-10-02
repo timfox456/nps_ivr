@@ -51,7 +51,7 @@ REQUIRED_FIELDS = [
     "vehicle_year",
 ]
 
-# SMS webhook
+# Twilio SMS
 @app.post("/twilio/sms", response_class=PlainTextResponse)
 async def twilio_sms(request: Request):
     form = dict(await request.form())
@@ -80,7 +80,7 @@ async def twilio_sms(request: Request):
     finally:
         db.close()
 
-# Voice webhook: initial call
+# Twilio Voice: initial call
 @app.post("/twilio/voice", response_class=PlainTextResponse)
 async def twilio_voice(request: Request):
     form = dict(await request.form())
