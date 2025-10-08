@@ -47,6 +47,28 @@ Copy the public URL.
 - `DATABASE_URL` (optional, default sqlite:///./nps_ivr.db)
 - `SALESFORCE_BASE_URL` and `SALESFORCE_API_TOKEN` to enable lead posting
 
+## Demo Chatbot CLI
+A command-line interface is available to test the chatbot logic.
+
+### Running the Demo
+1.  **Activate the virtual environment:**
+    ```bash
+    source .venv/bin/activate
+    ```
+
+2.  **Run in simulation mode:**
+    This mode prints the conversation to the console without sending real SMS messages.
+    ```bash
+    python3 demo_chatbot.py
+    ```
+
+3.  **Run in real mode:**
+    This mode sends real SMS messages using your Twilio account. Ensure your `TWILIO_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` are set as environment variables or in a `.env` file.
+    ```bash
+    python3 demo_chatbot.py --mode real --user-phone-number <your_phone_number>
+    ```
+    Replace `<your_phone_number>` with the destination phone number.
+
 ## Notes
 - The Salesforce client is a stub; add your real endpoint and mapping.
 - For production, validate Twilio signatures and add auth/allowlists on webhooks.

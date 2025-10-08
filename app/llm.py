@@ -16,7 +16,7 @@ def client() -> OpenAI:
 DEFAULT_QUESTIONS = {
     "first_name": "What is your first name?",
     "last_name": "What is your last name?",
-    "address": "What is your full mailing address?",
+    "address": "What state do you reside in?",
     "phone": "What is the best phone number to reach you?",
     "email": "What is your email address?",
     "vehicle_make": "What is the make of the vehicle?",
@@ -47,7 +47,13 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
     sys = (
         "You are a lead intake assistant for National Powersports Auctions (NPA). "
         "From the user's message, extract any of these fields if present: first_name, last_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
+        "IMPORTANT: For the 'address' field, we only need the STATE of residence. If the user provides a full address, extract only the state abbreviation or name. "
+        "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'John'), use the conversation context to infer which field they're answering. "
+        "Look at the known_state to see what fields are still missing and what was likely just asked. "
+        "For example, if last_name is missing and they say 'Smith', extract it as last_name: 'Smith'. "
         "Then propose one short, friendly next question that asks for the most important missing field. "
+        "Use conversational variety - don't repeat the exact same phrasing. Be natural and friendly while gathering the required information. "
+        "You can rephrase questions in different ways (e.g., 'Could you share your first name?' vs 'What's your first name?' vs 'May I have your first name?'). "
         "Return STRICT JSON with keys exactly as above, plus next_question."
     )
     user_payload = {
@@ -62,7 +68,7 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
                 {"role": "system", "content": sys},
                 {"role": "user", "content": json.dumps(user_payload)},
             ],
-            temperature=0.2,
+            temperature=0.7,
             response_format={"type": "json_object"},
         )
         text = resp.choices[0].message.content or "{}"
