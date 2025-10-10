@@ -41,6 +41,30 @@ class TestNormalizeTranscribedEmail:
     def test_extra_spaces(self):
         assert normalize_transcribed_email("  john  at  example  dot  com  ") == "john@example.com"
 
+    def test_auto_correct_gmail(self):
+        assert normalize_transcribed_email("tfox at gmail") == "tfox@gmail.com"
+
+    def test_auto_correct_yahoo(self):
+        assert normalize_transcribed_email("john at yahoo") == "john@yahoo.com"
+
+    def test_auto_correct_hotmail(self):
+        assert normalize_transcribed_email("user at hotmail") == "user@hotmail.com"
+
+    def test_auto_correct_outlook(self):
+        assert normalize_transcribed_email("test at outlook") == "test@outlook.com"
+
+    def test_auto_correct_with_dots_in_local(self):
+        assert normalize_transcribed_email("john dot smith at gmail") == "john.smith@gmail.com"
+
+    def test_auto_correct_does_not_affect_complete_domains(self):
+        assert normalize_transcribed_email("user at gmail dot com") == "user@gmail.com"
+
+    def test_auto_correct_icloud(self):
+        assert normalize_transcribed_email("user at icloud") == "user@icloud.com"
+
+    def test_auto_correct_aol(self):
+        assert normalize_transcribed_email("user at aol") == "user@aol.com"
+
 
 class TestNormalizePhone:
     """Tests for phone number normalization."""
@@ -105,12 +129,12 @@ class TestValidateEmail:
     def test_invalid_no_at(self):
         is_valid, error = validate_email("testexample.com")
         assert is_valid is False
-        assert "@ symbol" in error
+        assert "'at' symbol" in error
 
     def test_invalid_multiple_at(self):
         is_valid, error = validate_email("test@@example.com")
         assert is_valid is False
-        assert "one @ symbol" in error
+        assert "'at' symbols" in error
 
     def test_invalid_no_domain(self):
         is_valid, error = validate_email("test@")
@@ -120,7 +144,7 @@ class TestValidateEmail:
     def test_invalid_no_local(self):
         is_valid, error = validate_email("@example.com")
         assert is_valid is False
-        assert "before the @" in error
+        assert "before the 'at'" in error
 
     def test_invalid_no_dot_in_domain(self):
         is_valid, error = validate_email("test@example")
@@ -130,7 +154,7 @@ class TestValidateEmail:
     def test_invalid_empty(self):
         is_valid, error = validate_email("")
         assert is_valid is False
-        assert "empty" in error.lower()
+        assert "didn't catch" in error.lower() or "empty" in error.lower()
 
     def test_invalid_too_short(self):
         is_valid, error = validate_email("a@")
@@ -191,12 +215,14 @@ class TestValidatePhone:
         assert "Area code" in error
 
     def test_invalid_exchange_starts_with_zero(self):
-        is_valid, error = validate_phone("5550234567")
+        # Use non-555 area code since 555 numbers are exempt from exchange validation
+        is_valid, error = validate_phone("4200234567")
         assert is_valid is False
         assert "Exchange" in error
 
     def test_invalid_exchange_starts_with_one(self):
-        is_valid, error = validate_phone("5551234567")
+        # Use non-555 area code since 555 numbers are exempt from exchange validation
+        is_valid, error = validate_phone("4201234567")
         assert is_valid is False
         assert "Exchange" in error
 

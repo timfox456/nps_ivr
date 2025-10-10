@@ -32,19 +32,23 @@ def test_voice_collect_prompts_next_question(mock_extract, client):
 @patch("app.main.process_turn")
 @patch("app.main.create_lead")
 def test_voice_completion_hangup(mock_create_lead, mock_process_turn, mock_get_session, client):
-    # Mock the session
+    # Mock the session - start with phone and email already confirmed
     mock_session = MagicMock()
     mock_session.status = "open"
-    mock_session.state = {}
+    mock_session.state = {
+        "phone": "(555) 123-4567",  # Already confirmed
+        "email": "test@example.com",  # Already confirmed
+    }
     mock_get_session.return_value = mock_session
 
     # Mock the process_turn function to return a completed state
+    # Since phone and email are already in state, process_turn won't add them again
     all_fields = {
         "first_name": "A",
         "last_name": "B",
         "address": "1 st",
-        "phone": "+1",
-        "email": "a@b.com",
+        "phone": "(555) 123-4567",  # Same as before
+        "email": "test@example.com",  # Same as before
         "vehicle_make": "Honda",
         "vehicle_model": "CB",
         "vehicle_year": "2020",

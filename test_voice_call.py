@@ -104,12 +104,19 @@ class VoiceCallSimulator:
         print(f"Call SID: {self.call_sid}")
         print(f"{'='*60}\n")
 
+        # Use a valid-looking test phone number for caller ID detection
+        # Note: The system will detect this and ask for confirmation
+        test_from_number = "+17203811084"
+
+        print(f"📞 Simulating call from: {test_from_number}")
+        print(f"   (System will detect and ask for confirmation)\n")
+
         # Initial call to /twilio/voice
         response = requests.post(
             f"{self.base_url}/twilio/voice",
             data={
                 "CallSid": self.call_sid,
-                "From": "+15555555555",  # Test number
+                "From": test_from_number,  # Valid format for caller ID detection
                 "To": settings.twilio_phone_number or "+16198530829",
             }
         )
@@ -132,48 +139,86 @@ class VoiceCallSimulator:
     def conversation_loop(self):
         """Main conversation loop."""
         done = False
+        max_retries = 3
+        retry_count = 0
+        interrupt_count = 0  # Track consecutive Ctrl+C presses
 
         while not done:
-            # Listen for user input
-            user_input = self.listen(timeout=10)
+            try:
+                # Listen for user input
+                user_input = self.listen(timeout=10)
 
-            if not user_input:
-                print("No input received. Trying again...\n")
-                continue
+                # Reset interrupt counter on successful input
+                if user_input:
+                    interrupt_count = 0
 
-            # Send to /twilio/voice/collect
-            response = requests.post(
-                f"{self.base_url}/twilio/voice/collect",
-                data={
-                    "CallSid": self.call_sid,
-                    "From": "+15555555555",
-                    "To": settings.twilio_phone_number or "+16198530829",
-                    "SpeechResult": user_input,
-                }
-            )
+                # Check for exit command
+                if user_input and user_input.lower().strip() in ["exit", "quit", "bye", "goodbye"]:
+                    print("\n[EXIT COMMAND] Terminating call as requested.\n")
+                    break
 
-            if response.status_code != 200:
-                print(f"Error: Server returned {response.status_code}")
-                print(response.text)
-                break
+                if not user_input:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print(f"\nNo input received after {max_retries} attempts. Ending call.\n")
+                        break
+                    print(f"No input received. Trying again... (Attempt {retry_count}/{max_retries})\n")
+                    continue
 
-            # Parse TwiML response
-            twiml = response.text
-            message = self._extract_say_text(twiml)
+                # Reset retry count on successful input
+                retry_count = 0
 
-            # Check if call should end
-            if "<Hangup/>" in twiml or "<Hangup />" in twiml:
-                done = True
+                # Send to /twilio/voice/collect
+                # Note: The server will handle:
+                #   - Phone number confirmation (if phone number is detected)
+                #   - Email confirmation (if email is detected)
+                #   - Email domain auto-correction (gmail, yahoo, etc.)
+                #   - Field validation with helpful voice-friendly error messages
+                response = requests.post(
+                    f"{self.base_url}/twilio/voice/collect",
+                    data={
+                        "CallSid": self.call_sid,
+                        "From": "+17203811084",  # Must match the start_call From number
+                        "To": settings.twilio_phone_number or "+16198530829",
+                        "SpeechResult": user_input,
+                    }
+                )
+
+                if response.status_code != 200:
+                    print(f"Error: Server returned {response.status_code}")
+                    print(response.text)
+                    break
+
+                # Parse TwiML response
+                twiml = response.text
+                message = self._extract_say_text(twiml)
+
+                # Check if call should end
+                if "<Hangup/>" in twiml or "<Hangup />" in twiml:
+                    done = True
+                    if message:
+                        self.speak(message)
+                    print("\n[CALL ENDED]")
+                    break
+
+                # Speak the response
                 if message:
                     self.speak(message)
-                print("\n[CALL ENDED]")
-                break
+                else:
+                    print("No response from server. Ending call.")
+                    break
 
-            # Speak the response
-            if message:
-                self.speak(message)
-            else:
-                print("No response from server. Ending call.")
+            except KeyboardInterrupt:
+                interrupt_count += 1
+                if interrupt_count == 1:
+                    print("\n\n[INTERRUPTED] Press Ctrl+C again to exit, or Ctrl+D to quit immediately.\n")
+                    continue
+                else:
+                    print("\n\n[EXITING] Call terminated by user.\n")
+                    break
+            except EOFError:
+                # Ctrl+D pressed
+                print("\n\n[EXITING] Call terminated by user (Ctrl+D).\n")
                 break
 
         print(f"\n{'='*60}")
@@ -218,10 +263,21 @@ def main():
     print("  - Working microphone")
     print("  - Working speakers/headphones")
     print("  - Internet connection (for speech recognition)")
+    print("\nNew Features Being Tested:")
+    print("  ✓ Caller ID detection and phone confirmation")
+    print("  ✓ Phone number read-back and confirmation")
+    print("  ✓ Email address read-back and confirmation")
+    print("  ✓ Auto-correction for common domains (gmail, yahoo, etc.)")
+    print("  ✓ Voice-friendly validation error messages")
     print("\nTips:")
     print("  - Speak clearly when prompted")
-    print("  - Press Ctrl+C during listening to skip")
-    print("  - Use 'quit' or hang up to end the call")
+    print("  - For email: say 'at' for @ and 'dot' for periods")
+    print("    Example: 'john at gmail dot com'")
+    print("  - You can also say 'john at gmail' (auto-corrects to .com)")
+    print("  - When asked to confirm, say 'yes' or 'no'")
+    print("  - Say 'exit', 'quit', or 'bye' to end the call")
+    print("  - Press Ctrl+C during listening to skip input")
+    print("  - Press Ctrl+C twice (or Ctrl+D once) to exit the simulator")
     print("="*60 + "\n")
 
     try:

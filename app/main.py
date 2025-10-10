@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from .config import settings
 from .db import SessionLocal, init_db
 from .models import ConversationSession, missing_fields
@@ -104,6 +105,7 @@ async def twilio_sms(request: Request):
 
         new_state, next_q, done = process_turn(body, current_state)
         session.state = new_state
+        flag_modified(session, "state")
         # Send lead when done
         if done and session.status != "closed":
             await create_lead(new_state)
@@ -142,13 +144,14 @@ async def twilio_voice(request: Request):
             current_state = session.state or {}
             current_state["_pending_phone"] = caller_phone
             session.state = current_state
+            flag_modified(session, "state")
             db.commit()
 
             # Ask for confirmation
-            gather.say(f"Hi! Welcome to National Powersports Auctions. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
+            gather.say(f"Hi! Welcome to National Powersports Auctions. We help you sell your powersports vehicles. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
         else:
             # No caller ID available, proceed normally
-            gather.say("Hi! Welcome to National Powersports Auctions. I'll help you get started. What's your first name?")
+            gather.say("Hi! Welcome to National Powersports Auctions. We help you sell your powersports vehicles. I'll help you get started. What's your first name?")
 
         resp.append(gather)
         resp.redirect("/twilio/voice/collect")
@@ -168,8 +171,17 @@ async def twilio_voice_collect(request: Request):
         session = get_or_create_session(db, "voice", call_sid, form.get("From"), form.get("To"))
         current_state = session.state or {}
 
-        # Check if we're waiting for phone number confirmation
-        if "_pending_phone" in current_state and "phone" not in current_state:
+        # Clean up phone confirmation flag if phone is already saved
+        # This prevents re-entering confirmation logic after it's complete
+        if "_phone_confirmed" in current_state and "phone" in current_state and "_pending_phone" not in current_state:
+            del current_state["_phone_confirmed"]
+            session.state = current_state
+            flag_modified(session, "state")
+            db.commit()
+
+        # Check if we're waiting for phone number confirmation from caller ID
+        # Only process this if we have a pending phone and haven't confirmed yet
+        if "_pending_phone" in current_state and "_phone_confirmed" not in current_state:
             # User is responding to phone confirmation question
             response_lower = speech_result.lower().strip()
 
@@ -178,7 +190,9 @@ async def twilio_voice_collect(request: Request):
                 # User confirmed, save the phone number
                 current_state["phone"] = current_state["_pending_phone"]
                 del current_state["_pending_phone"]
+                current_state["_phone_confirmed"] = True  # Mark as confirmed to prevent re-entry
                 session.state = current_state
+                flag_modified(session, "state")
                 db.commit()
 
                 # Continue with normal flow - ask for first name
@@ -186,13 +200,16 @@ async def twilio_voice_collect(request: Request):
                 gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("Great! Now, what's your first name?")
                 resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             # Check for negative responses
             elif any(word in response_lower for word in ["no", "nope", "nah", "different", "another", "change"]):
                 # User wants different number
                 del current_state["_pending_phone"]
+                current_state["_phone_confirmed"] = True  # Mark as handled to prevent re-entry
                 session.state = current_state
+                flag_modified(session, "state")
                 db.commit()
 
                 # Ask them to provide their phone number
@@ -200,6 +217,7 @@ async def twilio_voice_collect(request: Request):
                 gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("No problem. What phone number would you like us to use?")
                 resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             else:
@@ -208,11 +226,305 @@ async def twilio_voice_collect(request: Request):
                 gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("I didn't catch that. Is this the best number to reach you? Please say yes or no.")
                 resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Check if we're waiting for phone number confirmation (from user-provided phone)
+        if "_pending_phone_confirm" in current_state:
+            response_lower = speech_result.lower().strip()
+
+            # Check for affirmative responses
+            if any(word in response_lower for word in ["yes", "yeah", "yep", "correct", "right", "sure", "okay", "ok", "yup"]):
+                # User confirmed, save the phone number
+                current_state["phone"] = current_state["_pending_phone_confirm"]
+                del current_state["_pending_phone_confirm"]
+                if "_pending_phone_confirm_speech" in current_state:
+                    del current_state["_pending_phone_confirm_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Continue with next question
+                miss = missing_fields(current_state)
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                if miss:
+                    from .llm import DEFAULT_QUESTIONS
+                    from .models import FIELD_PRETTY
+                    next_field = miss[0]
+                    next_q = DEFAULT_QUESTIONS.get(next_field, f"What is your {FIELD_PRETTY.get(next_field, next_field)}?")
+                    gather.say(f"Got it. {next_q}")
+                else:
+                    gather.say("Great! Let me get the rest of your information.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            # Check for negative responses
+            elif any(word in response_lower for word in ["no", "nope", "nah", "different", "incorrect", "wrong"]):
+                # User says number is wrong
+                del current_state["_pending_phone_confirm"]
+                if "_pending_phone_confirm_speech" in current_state:
+                    del current_state["_pending_phone_confirm_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Ask them to provide their phone number again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say("Sorry about that. Please tell me your phone number again.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            else:
+                # Unclear response, ask again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                phone_speech = current_state.get("_pending_phone_confirm_speech", "")
+                gather.say(f"I didn't catch that. I heard your phone number is {phone_speech}. Is that correct? Please say yes or no.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Check if we're waiting for vehicle information confirmation
+        if "_pending_vehicle_confirm" in current_state:
+            response_lower = speech_result.lower().strip()
+
+            # Check for affirmative responses
+            if any(word in response_lower for word in ["yes", "yeah", "yep", "correct", "right", "sure", "okay", "ok", "yup"]):
+                # User confirmed, save the vehicle info
+                if "_pending_vehicle_make" in current_state:
+                    current_state["vehicle_make"] = current_state["_pending_vehicle_make"]
+                    del current_state["_pending_vehicle_make"]
+                if "_pending_vehicle_model" in current_state:
+                    current_state["vehicle_model"] = current_state["_pending_vehicle_model"]
+                    del current_state["_pending_vehicle_model"]
+                if "_pending_vehicle_year" in current_state:
+                    current_state["vehicle_year"] = current_state["_pending_vehicle_year"]
+                    del current_state["_pending_vehicle_year"]
+                del current_state["_pending_vehicle_confirm"]
+                if "_pending_vehicle_speech" in current_state:
+                    del current_state["_pending_vehicle_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Continue with next question
+                miss = missing_fields(current_state)
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                if miss:
+                    from .llm import DEFAULT_QUESTIONS
+                    from .models import FIELD_PRETTY
+                    next_field = miss[0]
+                    next_q = DEFAULT_QUESTIONS.get(next_field, f"What is your {FIELD_PRETTY.get(next_field, next_field)}?")
+                    gather.say(f"Great! {next_q}")
+                else:
+                    gather.say("Great! We have everything we need.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            # Check for negative responses
+            elif any(word in response_lower for word in ["no", "nope", "nah", "different", "incorrect", "wrong"]):
+                # User says vehicle info is wrong - ask again for the specific fields
+                if "_pending_vehicle_make" in current_state:
+                    del current_state["_pending_vehicle_make"]
+                if "_pending_vehicle_model" in current_state:
+                    del current_state["_pending_vehicle_model"]
+                if "_pending_vehicle_year" in current_state:
+                    del current_state["_pending_vehicle_year"]
+                del current_state["_pending_vehicle_confirm"]
+                if "_pending_vehicle_speech" in current_state:
+                    del current_state["_pending_vehicle_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Ask for the vehicle information again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+
+                # Determine which field to re-ask
+                miss = missing_fields(current_state)
+                if "vehicle_make" in miss or "vehicle_model" in miss or "vehicle_year" in miss:
+                    gather.say("No problem. Let's try again. What is the make, model, and year of your vehicle?")
+                else:
+                    gather.say("Sorry about that. Please tell me the vehicle information again.")
+
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            else:
+                # Unclear response, ask again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                vehicle_speech = current_state.get("_pending_vehicle_speech", "")
+                gather.say(f"I didn't catch that. I heard {vehicle_speech}. Is that correct? Please say yes or no.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Check if we're waiting for email confirmation
+        if "_pending_email" in current_state:
+            response_lower = speech_result.lower().strip()
+
+            # Check for affirmative responses
+            if any(word in response_lower for word in ["yes", "yeah", "yep", "correct", "right", "sure", "okay", "ok", "yup"]):
+                # User confirmed, save the email
+                current_state["email"] = current_state["_pending_email"]
+                del current_state["_pending_email"]
+                if "_pending_email_speech" in current_state:
+                    del current_state["_pending_email_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Continue with next question
+                miss = missing_fields(current_state)
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                if miss:
+                    from .llm import DEFAULT_QUESTIONS
+                    from .models import FIELD_PRETTY
+                    next_field = miss[0]
+                    next_q = DEFAULT_QUESTIONS.get(next_field, f"What is your {FIELD_PRETTY.get(next_field, next_field)}?")
+                    gather.say(f"Perfect. {next_q}")
+                else:
+                    gather.say("Perfect! We have everything we need.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            # Check for negative responses
+            elif any(word in response_lower for word in ["no", "nope", "nah", "different", "incorrect", "wrong"]):
+                # User says email is wrong
+                del current_state["_pending_email"]
+                if "_pending_email_speech" in current_state:
+                    del current_state["_pending_email_speech"]
+                session.state = current_state
+                flag_modified(session, "state")
+                db.commit()
+                db.refresh(session)
+
+                # Ask them to provide their email again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say("Sorry about that. Please tell me your email address again, saying 'at' for the at symbol and 'dot' for periods.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            else:
+                # Unclear response, ask again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                email_speech = current_state.get("_pending_email_speech", current_state.get("_pending_email", ""))
+                gather.say(f"I didn't catch that. I heard your email is {email_speech}. Is that correct? Please say yes or no.")
+                resp.append(gather)
+                resp.redirect("/twilio/voice/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Normal processing flow
         new_state, next_q, done = process_turn(speech_result, current_state)
+
+        # Check if we just collected a phone number or email that needs confirmation
+        # Skip if we already have a pending confirmation or if phone was already confirmed
+        if ("phone" in new_state and "phone" not in current_state and
+            "_pending_phone" not in current_state and
+            "_pending_phone_confirm" not in current_state and
+            "_pending_phone_confirm_speech" not in current_state):
+            # A new phone number was just extracted - need confirmation
+            import re
+            phone = new_state["phone"]
+            digits = re.sub(r'\D', '', phone)
+            if len(digits) == 10:
+                # Format for speech: "555-223-4567"
+                phone_speech = f"{digits[0:3]}, {digits[3:6]}, {digits[6:10]}"
+
+                # Store the phone for confirmation
+                new_state["_pending_phone_confirm"] = phone
+                new_state["_pending_phone_confirm_speech"] = phone_speech
+                del new_state["phone"]  # Don't save yet
+                session.state = new_state
+                flag_modified(session, "state")
+                db.commit()
+
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say(f"I heard your phone number is {phone_speech}. Is that correct?")
+                resp.append(gather)
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+        if "email" in new_state and "email" not in current_state:
+            # A new email was just extracted - need confirmation
+            email = new_state["email"]
+
+            # Format email for speech-friendly pronunciation
+            # Convert @ and . to words for clearer TTS
+            email_speech = email.replace("@", " at ").replace(".", " dot ")
+
+            # Store the email for confirmation
+            new_state["_pending_email"] = email
+            new_state["_pending_email_speech"] = email_speech
+            del new_state["email"]  # Don't save yet
+            session.state = new_state
+            flag_modified(session, "state")
+            db.commit()
+
+            resp = VoiceResponse()
+            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather.say(f"I heard your email is {email_speech}. Is that correct?")
+            resp.append(gather)
+            return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Check if we just collected vehicle information that should be confirmed
+        # We'll confirm if any vehicle field was newly extracted
+        vehicle_fields_changed = (
+            ("vehicle_make" in new_state and "vehicle_make" not in current_state) or
+            ("vehicle_model" in new_state and "vehicle_model" not in current_state) or
+            ("vehicle_year" in new_state and "vehicle_year" not in current_state)
+        )
+
+        if vehicle_fields_changed:
+            # Build confirmation message
+            vehicle_parts = []
+            if "vehicle_year" in new_state:
+                vehicle_parts.append(new_state["vehicle_year"])
+                new_state["_pending_vehicle_year"] = new_state["vehicle_year"]
+                del new_state["vehicle_year"]
+            if "vehicle_make" in new_state:
+                vehicle_parts.append(new_state["vehicle_make"])
+                new_state["_pending_vehicle_make"] = new_state["vehicle_make"]
+                del new_state["vehicle_make"]
+            if "vehicle_model" in new_state:
+                vehicle_parts.append(new_state["vehicle_model"])
+                new_state["_pending_vehicle_model"] = new_state["vehicle_model"]
+                del new_state["vehicle_model"]
+
+            vehicle_speech = " ".join(vehicle_parts)
+            new_state["_pending_vehicle_confirm"] = True
+            new_state["_pending_vehicle_speech"] = vehicle_speech
+            session.state = new_state
+            flag_modified(session, "state")
+            db.commit()
+
+            resp = VoiceResponse()
+            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather.say(f"I heard {vehicle_speech}. Is that correct?")
+            resp.append(gather)
+            return PlainTextResponse(str(resp), media_type="application/xml")
+
         session.state = new_state
+        flag_modified(session, "state")
         if done and session.status != "closed":
             await create_lead(new_state)
             session.status = "closed"
@@ -220,12 +532,13 @@ async def twilio_voice_collect(request: Request):
 
         resp = VoiceResponse()
         if done:
-            resp.say("Thank you. Your information has been submitted to N P A. Goodbye.")
+            resp.say("Thank you. Your information has been submitted to N P A. We'll be in touch soon about selling your powersports vehicle. Goodbye.")
             resp.hangup()
         else:
             gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
             gather.say(next_q)
             resp.append(gather)
+            resp.redirect("/twilio/voice/collect")
         return PlainTextResponse(str(resp), media_type="application/xml")
     finally:
         db.close()

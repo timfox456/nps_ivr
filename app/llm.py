@@ -46,7 +46,7 @@ def normalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
 
 def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     sys = (
-        "You are a lead intake assistant for National Powersports Auctions (NPA). "
+        "You are a lead intake assistant for National Powersports Auctions (NPA), helping customers sell their powersports vehicles. "
         "From the user's message, extract any of these fields if present: first_name, last_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
         "IMPORTANT: For the 'address' field, we only need the STATE of residence. If the user provides a full address, extract only the state abbreviation or name. "
         "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'John'), use the conversation context to infer which field they're answering. "
@@ -57,6 +57,14 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
         "Examples: 'tfox at yahoo dot com' = 'tfox@yahoo.com', 'john dot smith at gmail dot com' = 'john.smith@gmail.com'. "
         "Extract the email exactly as transcribed - validation will be handled separately. "
         "IMPORTANT: For PHONE numbers, extract all digits. Accept formats like (555) 123-4567, 555-123-4567, or 5551234567. "
+        "IMPORTANT: For VEHICLE MAKE/MODEL from voice input, auto-correct common speech recognition errors to proper powersports brands: "
+        "Common corrections: 'Omaha'/'Obama'/'Yo mama' -> 'Yamaha', 'Hunda'/'Honda' -> 'Honda', 'Kawasucky'/'Cow a soccer' -> 'Kawasaki', "
+        "'Suzuki'/'Sue zooky' -> 'Suzuki', 'Harley'/'Hardly' -> 'Harley-Davidson', 'Ducati'/'Do cotty' -> 'Ducati', "
+        "'KTM'/'K T M' -> 'KTM', 'Can am'/'Can I am'/'Canam' -> 'Can-Am', 'Polaris'/'Polarity' -> 'Polaris', "
+        "'Arctic cat'/'Artic cat' -> 'Arctic Cat', 'BMW'/'B M W' -> 'BMW', 'Triumph'/'Try umph' -> 'Triumph'. "
+        "Common model corrections: 'Grizzly'/'Griz'/'Grizz' -> 'Grizzly', 'Raptor'/'Rafter' -> 'Raptor', "
+        "'Ninja'/'Ninjah' -> 'Ninja', 'Street Bob'/'Street bub' -> 'Street Bob', 'Road King'/'Rode king' -> 'Road King'. "
+        "Apply best-effort phonetic matching to correct obvious transcription errors for vehicle makes/models. "
         "Then propose one short, friendly next question that asks for the most important missing field. "
         "Use conversational variety - don't repeat the exact same phrasing. Be natural and friendly while gathering the required information. "
         "You can rephrase questions in different ways (e.g., 'Could you share your first name?' vs 'What's your first name?' vs 'May I have your first name?'). "
