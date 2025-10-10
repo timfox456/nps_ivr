@@ -137,6 +137,6 @@ def process_turn(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any],
         done = len(miss) == 0
 
         if done:
-            next_q = "Thanks! We have everything we need."
+            next_q = "Thank you. Your information has been submitted to NPA. We'll be in touch soon about selling your powersports vehicle."
 
     return new_state, next_q, done

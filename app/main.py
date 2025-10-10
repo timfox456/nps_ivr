@@ -114,7 +114,7 @@ async def twilio_sms(request: Request):
 
         resp = MessagingResponse()
         if done:
-            resp.message("Thank you! Your info has been submitted to NPA.")
+            resp.message("Thank you. Your information has been submitted to NPA. We'll be in touch soon about selling your powersports vehicle.")
         else:
             resp.message(next_q)
         return PlainTextResponse(str(resp), media_type="application/xml")
