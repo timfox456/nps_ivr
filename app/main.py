@@ -9,6 +9,7 @@ from .db import SessionLocal, init_db
 from .models import ConversationSession, missing_fields
 from .llm import process_turn
 from .salesforce import create_lead
+from .validation import normalize_phone, validate_phone
 
 app = FastAPI(title="NPA IVR & SMS Intake")
 
@@ -25,6 +26,36 @@ def on_startup():
     init_db()
 
 # Utilities
+
+def extract_caller_phone(from_number: str | None) -> tuple[str | None, str | None]:
+    """
+    Extract and normalize caller ID phone number.
+
+    Returns:
+        Tuple of (normalized_phone, formatted_for_speech)
+        - normalized_phone: Standardized format like "(555) 223-4567" or None if invalid
+        - formatted_for_speech: Friendly format for TTS like "555-223-4567" or None if invalid
+    """
+    if not from_number or from_number == "unknown":
+        return None, None
+
+    # Validate and normalize the phone number
+    is_valid, _ = validate_phone(from_number)
+    if not is_valid:
+        return None, None
+
+    normalized = normalize_phone(from_number)
+
+    # Extract digits for speech-friendly format
+    import re
+    digits = re.sub(r'\D', '', normalized)
+    if len(digits) == 10:
+        # Format as "555-223-4567" for better TTS pronunciation
+        formatted_speech = f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
+        return normalized, formatted_speech
+
+    return normalized, normalized
+
 
 def get_or_create_session(db: Session, channel: str, session_key: str, from_number: str | None, to_number: str | None) -> ConversationSession:
     obj = (
@@ -63,7 +94,15 @@ async def twilio_sms(request: Request):
     db = SessionLocal()
     try:
         session = get_or_create_session(db, "sms", sms_sid, from_number, to_number)
-        new_state, next_q, done = process_turn(body, session.state or {})
+
+        # Pre-populate phone number from caller ID if not already set
+        current_state = session.state or {}
+        if not current_state.get("phone"):
+            caller_phone, _ = extract_caller_phone(from_number)
+            if caller_phone:
+                current_state["phone"] = caller_phone
+
+        new_state, next_q, done = process_turn(body, current_state)
         session.state = new_state
         # Send lead when done
         if done and session.status != "closed":
@@ -91,9 +130,26 @@ async def twilio_voice(request: Request):
     db = SessionLocal()
     try:
         session = get_or_create_session(db, "voice", call_sid, from_number, to_number)
+
+        # Check if we can extract caller ID
+        caller_phone, phone_speech = extract_caller_phone(from_number)
+
         resp = VoiceResponse()
         gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
-        gather.say("Welcome to National Powersports Auctions. Tell me what you're selling and your contact info. For example, I am selling a 2018 Harley Davidson Sportster. My name is Jane Doe, phone 555 123 4567, email jane at example dot com.")
+
+        if caller_phone and phone_speech:
+            # Store the detected phone in a temporary field for confirmation
+            current_state = session.state or {}
+            current_state["_pending_phone"] = caller_phone
+            session.state = current_state
+            db.commit()
+
+            # Ask for confirmation
+            gather.say(f"Hi! Welcome to National Powersports Auctions. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
+        else:
+            # No caller ID available, proceed normally
+            gather.say("Hi! Welcome to National Powersports Auctions. I'll help you get started. What's your first name?")
+
         resp.append(gather)
         resp.redirect("/twilio/voice/collect")
         return PlainTextResponse(str(resp), media_type="application/xml")
@@ -110,7 +166,52 @@ async def twilio_voice_collect(request: Request):
     db = SessionLocal()
     try:
         session = get_or_create_session(db, "voice", call_sid, form.get("From"), form.get("To"))
-        new_state, next_q, done = process_turn(speech_result, session.state or {})
+        current_state = session.state or {}
+
+        # Check if we're waiting for phone number confirmation
+        if "_pending_phone" in current_state and "phone" not in current_state:
+            # User is responding to phone confirmation question
+            response_lower = speech_result.lower().strip()
+
+            # Check for affirmative responses
+            if any(word in response_lower for word in ["yes", "yeah", "yep", "correct", "right", "sure", "okay", "ok", "yup"]):
+                # User confirmed, save the phone number
+                current_state["phone"] = current_state["_pending_phone"]
+                del current_state["_pending_phone"]
+                session.state = current_state
+                db.commit()
+
+                # Continue with normal flow - ask for first name
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say("Great! Now, what's your first name?")
+                resp.append(gather)
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            # Check for negative responses
+            elif any(word in response_lower for word in ["no", "nope", "nah", "different", "another", "change"]):
+                # User wants different number
+                del current_state["_pending_phone"]
+                session.state = current_state
+                db.commit()
+
+                # Ask them to provide their phone number
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say("No problem. What phone number would you like us to use?")
+                resp.append(gather)
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+            else:
+                # Unclear response, ask again
+                resp = VoiceResponse()
+                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather.say("I didn't catch that. Is this the best number to reach you? Please say yes or no.")
+                resp.append(gather)
+                return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Normal processing flow
+        new_state, next_q, done = process_turn(speech_result, current_state)
         session.state = new_state
         if done and session.status != "closed":
             await create_lead(new_state)

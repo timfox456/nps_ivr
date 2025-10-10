@@ -4,6 +4,7 @@ from typing import Dict, Any, Tuple
 from openai import OpenAI
 from .config import settings
 from .models import missing_fields, FIELD_PRETTY
+from .validation import validate_and_normalize_field, normalize_transcribed_email
 
 _client: OpenAI | None = None
 
@@ -51,6 +52,11 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
         "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'John'), use the conversation context to infer which field they're answering. "
         "Look at the known_state to see what fields are still missing and what was likely just asked. "
         "For example, if last_name is missing and they say 'Smith', extract it as last_name: 'Smith'. "
+        "IMPORTANT: For EMAIL addresses from voice input, common transcription patterns: "
+        "'at' means '@', 'dot' means '.', 'underscore' means '_', 'dash' or 'hyphen' means '-'. "
+        "Examples: 'tfox at yahoo dot com' = 'tfox@yahoo.com', 'john dot smith at gmail dot com' = 'john.smith@gmail.com'. "
+        "Extract the email exactly as transcribed - validation will be handled separately. "
+        "IMPORTANT: For PHONE numbers, extract all digits. Accept formats like (555) 123-4567, 555-123-4567, or 5551234567. "
         "Then propose one short, friendly next question that asks for the most important missing field. "
         "Use conversational variety - don't repeat the exact same phrasing. Be natural and friendly while gathering the required information. "
         "You can rephrase questions in different ways (e.g., 'Could you share your first name?' vs 'What's your first name?' vs 'May I have your first name?'). "
@@ -92,12 +98,37 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
 
 def process_turn(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any], str, bool]:
     extracted, next_q = extract_and_prompt(user_text, state)
-    new_state = {**state}
-    new_state.update(extracted)
-    miss = missing_fields(new_state)
-    done = len(miss) == 0
 
-    if done:
-        next_q = "Thanks! We have everything we need."
+    # Validate and normalize extracted fields
+    validated_fields = {}
+    validation_errors = []
+
+    for field_name, value in extracted.items():
+        if value:
+            normalized_value, is_valid, error_msg = validate_and_normalize_field(field_name, value)
+
+            if is_valid:
+                validated_fields[field_name] = normalized_value
+            else:
+                # Don't save invalid field value, and collect error message
+                validation_errors.append((field_name, error_msg))
+
+    # Update state with validated fields only
+    new_state = {**state}
+    new_state.update(validated_fields)
+
+    # If there were validation errors, ask to re-enter the field
+    if validation_errors:
+        field_name, error_msg = validation_errors[0]  # Handle first error
+        field_pretty = FIELD_PRETTY.get(field_name, field_name)
+        next_q = f"Sorry, {error_msg}. Could you please provide your {field_pretty} again?"
+        done = False
+    else:
+        # Check if we're done collecting all fields
+        miss = missing_fields(new_state)
+        done = len(miss) == 0
+
+        if done:
+            next_q = "Thanks! We have everything we need."
 
     return new_state, next_q, done
