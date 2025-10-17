@@ -44,17 +44,31 @@ def normalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: str = None) -> Tuple[Dict[str, Any], str]:
+    # Build context-aware system prompt
+    context_hint = ""
+    if last_asked_field:
+        context_hint = f"CRITICAL CONTEXT: The user was just asked for their '{last_asked_field}'. If they provide a simple answer (like a single name or word), extract it as '{last_asked_field}'. "
+
     sys = (
         "You are a lead intake assistant for National Powersports Auctions (NPA), helping customers sell their powersports vehicles. "
         "From the user's message, extract any of these fields if present: first_name, last_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
+        f"{context_hint}"
         "IMPORTANT: For the 'address' field, we only need the STATE of residence. If the user provides a full address, extract only the state abbreviation or name. "
-        "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'John'), use the conversation context to infer which field they're answering. "
-        "Look at the known_state to see what fields are still missing and what was likely just asked. "
+        "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'Fox'), use the conversation context to infer which field they're answering. "
+        "Look at the known_state to see what fields are still missing. "
         "For example, if last_name is missing and they say 'Smith', extract it as last_name: 'Smith'. "
+        "Another example: if they were just asked for last_name and say 'Fox', extract it as last_name: 'Fox' (NOT first_name). "
         "IMPORTANT: For EMAIL addresses from voice input, common transcription patterns: "
         "'at' means '@', 'dot' means '.', 'underscore' means '_', 'dash' or 'hyphen' means '-'. "
         "Examples: 'tfox at yahoo dot com' = 'tfox@yahoo.com', 'john dot smith at gmail dot com' = 'john.smith@gmail.com'. "
+        "CRITICAL: Users may spell their email using phonetic alphabet (NATO, historical, or informal). Extract ONLY the letters/numbers, ignore the phonetic words. "
+        "Examples: 'T as in Tango F as in Fox at yahoo dot com' = 'tf@yahoo.com', "
+        "'N as in Nancy A as in Apple M as in Mary E at gmail dot com' = 'name@gmail.com', "
+        "'J for John O for Oscar N for November at test dot com' = 'jon@test.com', "
+        "'A as in Able B as in Baker C as in Charlie at test dot com' = 'abc@test.com'. "
+        "Look for patterns like 'X as in Y', 'X for Y', 'X like Y' and extract only the first letter (X). "
+        "Recognize both modern NATO (Alpha, Bravo, Charlie) and historical variants (Able, Baker, Charlie, Dog, Easy, Fox, George, How, Item, Jig, King, Love, Mike, Nan, Oboe, Peter, Queen, Roger, Sugar, Tare, Uncle, Victor, William, X-ray, Yoke, Zebra). "
         "Extract the email exactly as transcribed - validation will be handled separately. "
         "IMPORTANT: For PHONE numbers, extract all digits. Accept formats like (555) 123-4567, 555-123-4567, or 5551234567. "
         "IMPORTANT: For VEHICLE MAKE/MODEL from voice input, auto-correct common speech recognition errors to proper powersports brands: "
@@ -104,8 +118,8 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str,
     return normalize_fields(extracted), next_q
 
 
-def process_turn(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any], str, bool]:
-    extracted, next_q = extract_and_prompt(user_text, state)
+def process_turn(user_text: str, state: Dict[str, Any], last_asked_field: str = None) -> Tuple[Dict[str, Any], str, bool]:
+    extracted, next_q = extract_and_prompt(user_text, state, last_asked_field)
 
     # Validate and normalize extracted fields
     validated_fields = {}
@@ -137,6 +151,6 @@ def process_turn(user_text: str, state: Dict[str, Any]) -> Tuple[Dict[str, Any],
         done = len(miss) == 0
 
         if done:
-            next_q = "Thank you. Your information has been submitted to NPA. We'll be in touch soon about selling your powersports vehicle."
+            next_q = "Thank you for your information. I will start a file here and one of our agents will reach out to you in the next 24 hours to grab further information regarding your vehicle."
 
     return new_state, next_q, done

@@ -21,8 +21,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./nps_ivr.db"
 
-    # Salesforce placeholder
-    salesforce_base_url: Optional[str] = None
-    salesforce_api_token: Optional[str] = None
+    # NPA API (formerly Salesforce placeholder)
+    npa_api_base_url: str = "https://npadsapi.dev.npauctions.com"
+    npa_api_username: Optional[str] = None
+    npa_api_password: Optional[str] = None
+    npa_lead_source: str = "IVR"  # Default lead source for IVR calls/SMS
 
 settings = Settings()

@@ -28,6 +28,60 @@ def on_startup():
 
 # Utilities
 
+# NATO Phonetic Alphabet for clear email spelling
+NATO_ALPHABET = {
+    'a': 'Alpha', 'b': 'Bravo', 'c': 'Charlie', 'd': 'Delta', 'e': 'Echo',
+    'f': 'Foxtrot', 'g': 'Golf', 'h': 'Hotel', 'i': 'India', 'j': 'Juliet',
+    'k': 'Kilo', 'l': 'Lima', 'm': 'Mike', 'n': 'November', 'o': 'Oscar',
+    'p': 'Papa', 'q': 'Quebec', 'r': 'Romeo', 's': 'Sierra', 't': 'Tango',
+    'u': 'Uniform', 'v': 'Victor', 'w': 'Whiskey', 'x': 'X-ray', 'y': 'Yankee',
+    'z': 'Zulu',
+    '0': 'Zero', '1': 'One', '2': 'Two', '3': 'Three', '4': 'Four',
+    '5': 'Five', '6': 'Six', '7': 'Seven', '8': 'Eight', '9': 'Nine'
+}
+
+def format_email_for_speech(email: str) -> tuple[str, str]:
+    """
+    Format an email address for clear speech synthesis.
+
+    Returns tuple of (normal_speech, spelled_speech):
+    - normal_speech: "tfox at yahoo dot com"
+    - spelled_speech: "that's T as in Tango, F as in Foxtrot, O as in Oscar, X as in X-ray at yahoo dot com"
+
+    Example usage:
+        normal, spelled = format_email_for_speech("tfox@yahoo.com")
+        # normal = "tfox at yahoo dot com"
+        # spelled = "that's T as in Tango, F as in Foxtrot, O as in Oscar, X as in X-ray at yahoo dot com"
+    """
+    if '@' not in email:
+        return email, email
+
+    local, domain = email.split('@', 1)
+
+    # Normal speech: just replace @ and dots
+    domain_spoken = domain.replace('.', ' dot ')
+    normal_speech = f"{local} at {domain_spoken}"
+
+    # Spelled speech: NATO alphabet for local part
+    local_parts = []
+    for char in local.lower():
+        if char in NATO_ALPHABET:
+            local_parts.append(f"{char.upper()} as in {NATO_ALPHABET[char]}")
+        elif char == '.':
+            local_parts.append("dot")
+        elif char == '_':
+            local_parts.append("underscore")
+        elif char == '-':
+            local_parts.append("dash")
+        else:
+            local_parts.append(char)
+
+    # Join with commas for pauses
+    local_spelled = ", ".join(local_parts)
+    spelled_speech = f"that's {local_spelled} at {domain_spoken}"
+
+    return normal_speech, spelled_speech
+
 def extract_caller_phone(from_number: str | None) -> tuple[str | None, str | None]:
     """
     Extract and normalize caller ID phone number.
@@ -98,25 +152,50 @@ async def twilio_sms(request: Request):
 
         # Pre-populate phone number from caller ID if not already set
         current_state = session.state or {}
+
+        # Check if this is the first message - use last_prompt_field as indicator
+        # If last_prompt_field is not set, this is the first user message
+        is_first_message = not session.last_prompt_field
+
         if not current_state.get("phone"):
             caller_phone, _ = extract_caller_phone(from_number)
             if caller_phone:
                 current_state["phone"] = caller_phone
 
-        new_state, next_q, done = process_turn(body, current_state)
+        # Send welcome message for first interaction
+        if is_first_message:
+            resp = MessagingResponse()
+            resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your first name?")
+            session.state = current_state
+            session.last_prompt_field = "first_name"
+            session.last_prompt = "What's your first name?"
+            flag_modified(session, "state")
+            db.commit()
+            return PlainTextResponse(str(resp), media_type="application/xml")
+
+        # Pass last_prompt_field for better context tracking
+        last_asked = session.last_prompt_field if session.last_prompt_field else None
+        new_state, next_q, done = process_turn(body, current_state, last_asked)
+
+        # Determine which field we're asking about next for better context tracking
+        if not done:
+            miss = missing_fields(new_state)
+            if miss:
+                session.last_prompt_field = miss[0]
+                session.last_prompt = next_q
+
         session.state = new_state
         flag_modified(session, "state")
         # Send lead when done
         if done and session.status != "closed":
+            # Add channel info for lead creation
+            new_state["_channel"] = "sms"
             await create_lead(new_state)
             session.status = "closed"
         db.commit()
 
         resp = MessagingResponse()
-        if done:
-            resp.message("Thank you. Your information has been submitted to NPA. We'll be in touch soon about selling your powersports vehicle.")
-        else:
-            resp.message(next_q)
+        resp.message(next_q)
         return PlainTextResponse(str(resp), media_type="application/xml")
     finally:
         db.close()
@@ -148,10 +227,10 @@ async def twilio_voice(request: Request):
             db.commit()
 
             # Ask for confirmation
-            gather.say(f"Hi! Welcome to National Powersports Auctions. We help you sell your powersports vehicles. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
+            gather.say(f"Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
         else:
             # No caller ID available, proceed normally
-            gather.say("Hi! Welcome to National Powersports Auctions. We help you sell your powersports vehicles. I'll help you get started. What's your first name?")
+            gather.say("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your first name?")
 
         resp.append(gather)
         resp.redirect("/twilio/voice/collect")
@@ -381,8 +460,10 @@ async def twilio_voice_collect(request: Request):
                 # User confirmed, save the email
                 current_state["email"] = current_state["_pending_email"]
                 del current_state["_pending_email"]
-                if "_pending_email_speech" in current_state:
-                    del current_state["_pending_email_speech"]
+                if "_pending_email_normal" in current_state:
+                    del current_state["_pending_email_normal"]
+                if "_pending_email_spelled" in current_state:
+                    del current_state["_pending_email_spelled"]
                 session.state = current_state
                 flag_modified(session, "state")
                 db.commit()
@@ -408,8 +489,10 @@ async def twilio_voice_collect(request: Request):
             elif any(word in response_lower for word in ["no", "nope", "nah", "different", "incorrect", "wrong"]):
                 # User says email is wrong
                 del current_state["_pending_email"]
-                if "_pending_email_speech" in current_state:
-                    del current_state["_pending_email_speech"]
+                if "_pending_email_normal" in current_state:
+                    del current_state["_pending_email_normal"]
+                if "_pending_email_spelled" in current_state:
+                    del current_state["_pending_email_spelled"]
                 session.state = current_state
                 flag_modified(session, "state")
                 db.commit()
@@ -427,8 +510,14 @@ async def twilio_voice_collect(request: Request):
                 # Unclear response, ask again
                 resp = VoiceResponse()
                 gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
-                email_speech = current_state.get("_pending_email_speech", current_state.get("_pending_email", ""))
-                gather.say(f"I didn't catch that. I heard your email is {email_speech}. Is that correct? Please say yes or no.")
+                email_normal = current_state.get("_pending_email_normal", "")
+                email_spelled = current_state.get("_pending_email_spelled", "")
+
+                gather.say(f"I didn't catch that. Let me repeat: {email_normal}.")
+                gather.pause(length=1)
+                gather.say(email_spelled, rate="slow")
+                gather.pause(length=1)
+                gather.say("Is that correct? Please say yes or no.")
                 resp.append(gather)
                 resp.redirect("/twilio/voice/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
@@ -468,13 +557,13 @@ async def twilio_voice_collect(request: Request):
             # A new email was just extracted - need confirmation
             email = new_state["email"]
 
-            # Format email for speech-friendly pronunciation
-            # Convert @ and . to words for clearer TTS
-            email_speech = email.replace("@", " at ").replace(".", " dot ")
+            # Format email: normal first, then spelled with NATO alphabet
+            email_normal, email_spelled = format_email_for_speech(email)
 
             # Store the email for confirmation
             new_state["_pending_email"] = email
-            new_state["_pending_email_speech"] = email_speech
+            new_state["_pending_email_normal"] = email_normal
+            new_state["_pending_email_spelled"] = email_spelled
             del new_state["email"]  # Don't save yet
             session.state = new_state
             flag_modified(session, "state")
@@ -482,7 +571,12 @@ async def twilio_voice_collect(request: Request):
 
             resp = VoiceResponse()
             gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
-            gather.say(f"I heard your email is {email_speech}. Is that correct?")
+            # Say it normally first, then spell it out
+            gather.say(f"I heard your email is {email_normal}.")
+            gather.pause(length=1)
+            gather.say(email_spelled, rate="slow")
+            gather.pause(length=1)
+            gather.say("Is that correct? Please say yes or no.")
             resp.append(gather)
             return PlainTextResponse(str(resp), media_type="application/xml")
 
@@ -526,13 +620,15 @@ async def twilio_voice_collect(request: Request):
         session.state = new_state
         flag_modified(session, "state")
         if done and session.status != "closed":
+            # Add channel info for lead creation
+            new_state["_channel"] = "voice"
             await create_lead(new_state)
             session.status = "closed"
         db.commit()
 
         resp = VoiceResponse()
         if done:
-            resp.say("Thank you. Your information has been submitted to N P A. We'll be in touch soon about selling your powersports vehicle. Goodbye.")
+            resp.say(next_q)
             resp.hangup()
         else:
             gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
