@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Request, Form
+import json
+import logging
+from fastapi import FastAPI, Request, Form, WebSocket
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.voice_response import VoiceResponse, Gather, Connect, Stream
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from .config import settings
@@ -11,6 +13,10 @@ from .models import ConversationSession, missing_fields
 from .llm import process_turn
 from .salesforce import create_lead
 from .validation import normalize_phone, validate_phone
+from .voice_openai import TwilioMediaStreamHandler
+from .voice_openai_optimized import OptimizedRealtimeHandler
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="NPA IVR & SMS Intake")
 
@@ -216,9 +222,9 @@ async def twilio_sms(request: Request):
     finally:
         db.close()
 
-# Twilio Voice: initial call
-@app.post("/twilio/voice", response_class=PlainTextResponse)
-async def twilio_voice(request: Request):
+# Twilio Voice (Legacy IVR with Twilio TTS) - keeping as backup
+@app.post("/twilio/voice-ivr", response_class=PlainTextResponse)
+async def twilio_voice_ivr(request: Request):
     form = dict(await request.form())
     call_sid = form.get("CallSid") or "call"
     from_number = form.get("From") or "unknown"
@@ -232,7 +238,7 @@ async def twilio_voice(request: Request):
         caller_phone, phone_speech = extract_caller_phone(from_number)
 
         resp = VoiceResponse()
-        gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+        gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
 
         if caller_phone and phone_speech:
             # Store the detected phone in a temporary field for confirmation
@@ -249,14 +255,14 @@ async def twilio_voice(request: Request):
             gather.say("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
 
         resp.append(gather)
-        resp.redirect("/twilio/voice/collect")
+        resp.redirect("/twilio/voice-ivr/collect")
         return PlainTextResponse(str(resp), media_type="application/xml")
     finally:
         db.close()
 
-# Voice gather handler
-@app.post("/twilio/voice/collect", response_class=PlainTextResponse)
-async def twilio_voice_collect(request: Request):
+# Voice gather handler (Legacy IVR)
+@app.post("/twilio/voice-ivr/collect", response_class=PlainTextResponse)
+async def twilio_voice_ivr_collect(request: Request):
     form = dict(await request.form())
     call_sid = form.get("CallSid") or "call"
     speech_result = form.get("SpeechResult") or form.get("Digits") or ""
@@ -278,10 +284,10 @@ async def twilio_voice_collect(request: Request):
 
             # Send welcome message and ask for name
             resp = VoiceResponse()
-            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
             gather.say("Restarting. Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
             resp.append(gather)
-            resp.redirect("/twilio/voice/collect")
+            resp.redirect("/twilio/voice-ivr/collect")
             return PlainTextResponse(str(resp), media_type="application/xml")
 
         current_state = session.state or {}
@@ -312,10 +318,10 @@ async def twilio_voice_collect(request: Request):
 
                 # Continue with normal flow - ask for full name
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("Great! Now, what's your full name?")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             # Check for negative responses
@@ -329,19 +335,19 @@ async def twilio_voice_collect(request: Request):
 
                 # Ask them to provide their phone number
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("No problem. What phone number would you like us to use?")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             else:
                 # Unclear response, ask again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("I didn't catch that. Is this the best number to reach you? Please say yes or no.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Check if we're waiting for phone number confirmation (from user-provided phone)
@@ -363,7 +369,7 @@ async def twilio_voice_collect(request: Request):
                 # Continue with next question
                 miss = missing_fields(current_state)
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 if miss:
                     from .llm import DEFAULT_QUESTIONS
                     from .models import FIELD_PRETTY
@@ -373,7 +379,7 @@ async def twilio_voice_collect(request: Request):
                 else:
                     gather.say("Great! Let me get the rest of your information.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             # Check for negative responses
@@ -389,20 +395,20 @@ async def twilio_voice_collect(request: Request):
 
                 # Ask them to provide their phone number again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("Sorry about that. Please tell me your phone number again.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             else:
                 # Unclear response, ask again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 phone_speech = current_state.get("_pending_phone_confirm_speech", "")
                 gather.say(f"I didn't catch that. I heard your phone number is {phone_speech}. Is that correct? Please say yes or no.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Check if we're waiting for vehicle information confirmation
@@ -432,7 +438,7 @@ async def twilio_voice_collect(request: Request):
                 # Continue with next question
                 miss = missing_fields(current_state)
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 if miss:
                     from .llm import DEFAULT_QUESTIONS
                     from .models import FIELD_PRETTY
@@ -442,7 +448,7 @@ async def twilio_voice_collect(request: Request):
                 else:
                     gather.say("Great! We have everything we need.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             # Check for negative responses
@@ -464,7 +470,7 @@ async def twilio_voice_collect(request: Request):
 
                 # Ask for the vehicle information again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
 
                 # Determine which field to re-ask
                 miss = missing_fields(current_state)
@@ -474,17 +480,17 @@ async def twilio_voice_collect(request: Request):
                     gather.say("Sorry about that. Please tell me the vehicle information again.")
 
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             else:
                 # Unclear response, ask again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 vehicle_speech = current_state.get("_pending_vehicle_speech", "")
                 gather.say(f"I didn't catch that. I heard {vehicle_speech}. Is that correct? Please say yes or no.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Check if we're waiting for email confirmation
@@ -508,7 +514,7 @@ async def twilio_voice_collect(request: Request):
                 # Continue with next question
                 miss = missing_fields(current_state)
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 if miss:
                     from .llm import DEFAULT_QUESTIONS
                     from .models import FIELD_PRETTY
@@ -518,7 +524,7 @@ async def twilio_voice_collect(request: Request):
                 else:
                     gather.say("Perfect! We have everything we need.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             # Check for negative responses
@@ -536,16 +542,16 @@ async def twilio_voice_collect(request: Request):
 
                 # Ask them to provide their email again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say("Sorry about that. Please tell me your email address again, saying 'at' for the at symbol and 'dot' for periods.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
             else:
                 # Unclear response, ask again
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 email_normal = current_state.get("_pending_email_normal", "")
                 email_spelled = current_state.get("_pending_email_spelled", "")
 
@@ -555,7 +561,7 @@ async def twilio_voice_collect(request: Request):
                 gather.pause(length=1)
                 gather.say("Is that correct? Please say yes or no.")
                 resp.append(gather)
-                resp.redirect("/twilio/voice/collect")
+                resp.redirect("/twilio/voice-ivr/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Normal processing flow
@@ -584,7 +590,7 @@ async def twilio_voice_collect(request: Request):
                 db.commit()
 
                 resp = VoiceResponse()
-                gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+                gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
                 gather.say(f"I heard your phone number is {phone_speech}. Is that correct?")
                 resp.append(gather)
                 return PlainTextResponse(str(resp), media_type="application/xml")
@@ -606,7 +612,7 @@ async def twilio_voice_collect(request: Request):
             db.commit()
 
             resp = VoiceResponse()
-            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
             # Say it normally first, then spell it out
             gather.say(f"I heard your email is {email_normal}.")
             gather.pause(length=1)
@@ -648,7 +654,7 @@ async def twilio_voice_collect(request: Request):
             db.commit()
 
             resp = VoiceResponse()
-            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
             gather.say(f"I heard {vehicle_speech}. Is that correct?")
             resp.append(gather)
             return PlainTextResponse(str(resp), media_type="application/xml")
@@ -667,14 +673,174 @@ async def twilio_voice_collect(request: Request):
             resp.say(next_q)
             resp.hangup()
         else:
-            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather = Gather(input="speech dtmf", action="/twilio/voice-ivr/collect", method="POST", timeout=6, speechTimeout="auto")
             gather.say(next_q)
             resp.append(gather)
-            resp.redirect("/twilio/voice/collect")
+            resp.redirect("/twilio/voice-ivr/collect")
         return PlainTextResponse(str(resp), media_type="application/xml")
     finally:
         db.close()
 
+# Twilio Voice with OpenAI Realtime API - Proxied mode (for testing/debugging)
+@app.post("/twilio/voice-realtime-proxied", response_class=PlainTextResponse)
+async def twilio_voice_realtime_proxied(request: Request):
+    """
+    Handle incoming voice calls using OpenAI Realtime API
+    This provides natural, low-latency voice conversations
+    """
+    form = dict(await request.form())
+    call_sid = form.get("CallSid") or "call"
+
+    logger.info(f"Voice call received: {call_sid}")
+
+    # Return TwiML that connects to our WebSocket endpoint
+    # Use the full host from request headers (includes ngrok domain)
+    host = request.headers.get('host', request.url.hostname)
+    resp = VoiceResponse()
+
+    # Add a Say as fallback in case stream fails
+    resp.say("Connecting to voice assistant. Please wait.")
+
+    connect = Connect()
+    stream = Stream(url=f'wss://{host}/twilio/voice/stream')
+    connect.append(stream)
+    resp.append(connect)
+
+    # Fallback if stream fails
+    resp.say("Sorry, we're experiencing technical difficulties. Please try again later.")
+    resp.hangup()
+
+    logger.info(f"Returning TwiML with stream URL: wss://{host}/twilio/voice/stream")
+    return PlainTextResponse(str(resp), media_type="application/xml")
+
+
+@app.websocket("/twilio/voice/stream")
+async def twilio_voice_stream(websocket: WebSocket):
+    """
+    WebSocket endpoint for Twilio Media Streams with OpenAI Realtime API
+    """
+    call_sid = None
+    try:
+        await websocket.accept()
+        logger.info("WebSocket connection accepted")
+
+        # Twilio sends messages in this order: connected, start, media, media, ...
+        # We need to wait for the "start" event to get the call SID
+        while True:
+            message = await websocket.receive_text()
+            data = json.loads(message)
+            event_type = data.get("event")
+
+            logger.info(f"Received event: {event_type}")
+
+            if event_type == "connected":
+                logger.info("Twilio Media Stream connected")
+                continue
+
+            elif event_type == "start":
+                call_sid = data["start"]["callSid"]
+                stream_sid = data["start"]["streamSid"]
+                logger.info(f"Starting OpenAI Realtime stream for call {call_sid}, stream {stream_sid}")
+
+                # Create handler and start processing
+                # Pass the start data to the handler since we already consumed it
+                handler = TwilioMediaStreamHandler(websocket, call_sid, stream_sid)
+                await handler.start()
+                break
+
+            else:
+                logger.warning(f"Unexpected event before start: {event_type}")
+
+    except Exception as e:
+        logger.error(f"WebSocket error for call {call_sid}: {e}", exc_info=True)
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+# Twilio Voice with OpenAI Realtime API - Optimized Production Mode
+@app.post("/twilio/voice-realtime", response_class=PlainTextResponse)
+async def twilio_voice_realtime_optimized(request: Request):
+    """
+    Optimized production endpoint with minimal overhead
+    - Reduced logging
+    - Direct audio forwarding
+    - No mid-call database writes
+    """
+    form = dict(await request.form())
+    call_sid = form.get("CallSid") or "call"
+
+    logger.info(f"Optimized voice call: {call_sid}")
+
+    host = request.headers.get('host', request.url.hostname)
+    resp = VoiceResponse()
+    resp.say("Connecting.")
+
+    connect = Connect()
+    stream = Stream(url=f'wss://{host}/twilio/voice/stream-optimized')
+    connect.append(stream)
+    resp.append(connect)
+
+    return PlainTextResponse(str(resp), media_type="application/xml")
+
+
+@app.websocket("/twilio/voice/stream-optimized")
+async def twilio_voice_stream_optimized(websocket: WebSocket):
+    """Optimized WebSocket endpoint for production"""
+    call_sid = None
+    try:
+        await websocket.accept()
+
+        # Wait for start event
+        while True:
+            message = await websocket.receive_text()
+            data = json.loads(message)
+            event_type = data.get("event")
+
+            if event_type == "connected":
+                continue
+            elif event_type == "start":
+                call_sid = data["start"]["callSid"]
+                stream_sid = data["start"]["streamSid"]
+
+                # Use optimized handler
+                handler = OptimizedRealtimeHandler(websocket, call_sid, stream_sid)
+                await handler.start()
+                break
+
+    except Exception as e:
+        logger.error(f"Optimized WS error {call_sid}: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+# Twilio Voice - Default endpoint (switchable)
+@app.post("/twilio/voice", response_class=PlainTextResponse)
+async def twilio_voice(request: Request):
+    """
+    Default voice endpoint - currently uses proxied mode for testing
+
+    Change to optimized for production:
+    return await twilio_voice_realtime_optimized(request)
+    """
+    # For now, use proxied mode with full logging
+    return await twilio_voice_realtime_proxied(request)
+
+
+@app.get("/test/voice-twiml")
+async def test_voice_twiml(request: Request):
+    """Test endpoint to see what TwiML is generated"""
+    host = request.headers.get('host', request.url.hostname)
+    resp = VoiceResponse()
+    connect = Connect()
+    stream = Stream(url=f'wss://{host}/twilio/voice/stream')
+    connect.append(stream)
+    resp.append(connect)
+    return PlainTextResponse(str(resp), media_type="application/xml")
