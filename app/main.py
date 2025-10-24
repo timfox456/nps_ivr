@@ -112,8 +112,9 @@ def extract_caller_phone(from_number: str | None) -> tuple[str | None, str | Non
     import re
     digits = re.sub(r'\D', '', normalized)
     if len(digits) == 10:
-        # Format as "555-223-4567" for better TTS pronunciation
-        formatted_speech = f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
+        # Format each digit separately with spaces for proper TTS pronunciation
+        # e.g., "4 7 0, 8 0 7, 3 3 1 7" instead of "470-807-3317"
+        formatted_speech = f"{digits[0]} {digits[1]} {digits[2]}, {digits[3]} {digits[4]} {digits[5]}, {digits[6]} {digits[7]} {digits[8]} {digits[9]}"
         return normalized, formatted_speech
 
     return normalized, normalized

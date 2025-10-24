@@ -47,6 +47,17 @@ Then collect the following information from the caller:
    - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
    - If they only give partial info, ask for what's missing
 
+CRITICAL CONFIRMATION RULES:
+- PHONE NUMBER from Caller ID: If confirming caller ID number and they say "yes", just move on - NO CONFIRMATION NEEDED
+- PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit: "Let me confirm, that's 4-7-0-8-0-7-3-3-1-7, is that correct?"
+- ZIP CODE: ALWAYS confirm by reading digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
+- EMAIL: First acknowledge what you heard, then confirm using NATO phonetic alphabet. Example:
+  * User says: "T-F-O-X at yahoo dot com"
+  * You say: "I heard T-F-O-X at yahoo dot com. Let me confirm that's T as in Tango, F as in Foxtrot, O as in Oscar, X as in X-ray at yahoo dot com. Is that correct?"
+  * IMPORTANT: Only use phonetic alphabet in YOUR confirmation, not when initially hearing it
+- Use NATO alphabet for confirmation: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu
+- If user repeats email multiple times or seems frustrated, acknowledge and confirm more carefully
+
 Be conversational and natural. Ask one question at a time.
 If the caller provides multiple pieces of information at once, acknowledge what you heard and ask for the next missing field.
 Be patient and helpful if they need clarification.
@@ -185,9 +196,44 @@ If they say no, ask them for the correct phone number."""
                 event_type = data.get("event")
 
                 if event_type == "start":
-                    # Already handled in main endpoint, but just in case
+                    # Extract stream info and custom parameters
                     self.stream_sid = data["start"]["streamSid"]
-                    logger.info(f"Media stream started: {self.stream_sid}")
+                    self.call_sid = data["start"]["callSid"]
+
+                    # Extract custom parameters (caller_phone and phone_speech)
+                    custom_params = data["start"].get("customParameters", {})
+                    caller_phone = custom_params.get("caller_phone")
+                    phone_speech = custom_params.get("phone_speech")
+
+                    print(f"=== START EVENT: call_sid={self.call_sid}, caller_phone={caller_phone} ===", flush=True)
+                    logger.info(f"Media stream started: {self.stream_sid}, call: {self.call_sid}")
+
+                    # If caller phone detected, send as a system message to OpenAI
+                    if caller_phone and phone_speech:
+                        self.caller_phone = caller_phone
+                        self.phone_speech = phone_speech
+
+                        # Send caller ID info as a conversation item instead of updating instructions
+                        caller_id_message = f"SYSTEM INFO: The caller is calling from {phone_speech}. After your greeting, ask them: 'I see you're calling from {phone_speech}. Is this the best number to reach you?' If they say yes, record the phone as {caller_phone} and do NOT repeat the number back - simply move on to the next question. If they say no, ask for the correct number and confirm it digit by digit."
+
+                        await self.openai_ws.send(json.dumps({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "system",
+                                "content": [{
+                                    "type": "input_text",
+                                    "text": caller_id_message
+                                }]
+                            }
+                        }))
+
+                        # Trigger a response
+                        await self.openai_ws.send(json.dumps({
+                            "type": "response.create"
+                        }))
+
+                        print(f"=== SENT CALLER ID TO OPENAI ===", flush=True)
 
                 elif event_type == "media":
                     # Forward audio to OpenAI
