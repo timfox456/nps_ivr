@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from fastapi import FastAPI, Request, Form, WebSocket
@@ -724,54 +725,35 @@ async def twilio_voice_realtime_proxied(request: Request):
     return PlainTextResponse(str(resp), media_type="application/xml")
 
 
+print("=== MAIN.PY MODULE LOADING - TWILIO_VOICE_STREAM DEFINITION ===", flush=True)
+
 @app.websocket("/twilio/voice/stream")
 async def twilio_voice_stream(websocket: WebSocket):
     """
     WebSocket endpoint for Twilio Media Streams with OpenAI Realtime API
     """
-    call_sid = None
+    print("=== WEBSOCKET FUNCTION CALLED ===", flush=True)
+    await websocket.accept()
+    print("=== WEBSOCKET ACCEPTED ===", flush=True)
+    logger.info("WebSocket connection accepted")
+
+    # Create handler with minimal info - it will get call details from Twilio's start event
+    print("=== CREATING HANDLER ===", flush=True)
+    handler = TwilioMediaStreamHandler(
+        websocket,
+        call_sid="pending",  # Will be set when start event arrives
+        stream_sid=None,
+        caller_phone=None,
+        phone_speech=None
+    )
+    print("=== HANDLER CREATED ===", flush=True)
+
     try:
-        await websocket.accept()
-        print("=== PROXIED WEBSOCKET ACCEPTED ===", flush=True)
-        logger.info("WebSocket connection accepted")
-
-        # Twilio sends messages in this order: connected, start, media, media, ...
-        # We need to wait for the "start" event to get the call SID
-        while True:
-            message = await websocket.receive_text()
-            data = json.loads(message)
-            event_type = data.get("event")
-
-            logger.info(f"Received event: {event_type}")
-
-            if event_type == "connected":
-                logger.info("Twilio Media Stream connected")
-                continue
-
-            elif event_type == "start":
-                call_sid = data["start"]["callSid"]
-                stream_sid = data["start"]["streamSid"]
-                logger.info(f"Starting OpenAI Realtime stream for call {call_sid}, stream {stream_sid}")
-
-                # Extract custom parameters (caller phone info)
-                custom_params = data["start"].get("customParameters", {})
-                caller_phone = custom_params.get("caller_phone")
-                phone_speech = custom_params.get("phone_speech")
-
-                # Create handler and start processing
-                handler = TwilioMediaStreamHandler(
-                    websocket, call_sid, stream_sid,
-                    caller_phone=caller_phone,
-                    phone_speech=phone_speech
-                )
-                await handler.start()
-                break
-
-            else:
-                logger.warning(f"Unexpected event before start: {event_type}")
-
+        print("=== STARTING HANDLER ===", flush=True)
+        await handler.start()
     except Exception as e:
-        logger.error(f"WebSocket error for call {call_sid}: {e}", exc_info=True)
+        print(f"=== HANDLER ERROR: {e} ===", flush=True)
+        logger.error(f"WebSocket handler error: {e}", exc_info=True)
         try:
             await websocket.close()
         except:

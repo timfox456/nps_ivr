@@ -40,12 +40,12 @@ Start by saying: "Thank you for calling National Powersport Buyers, where we mak
 
 Then collect the following information from the caller:
 1. Full name
-2. State of residence (just the state, not full address)
+2. ZIP code (5 digits)
 3. Phone number
 4. Email address
-5. Vehicle make (e.g., Yamaha, Honda, Kawasaki)
-6. Vehicle model (e.g., R1, CBR, Ninja)
-7. Vehicle year
+5. Vehicle information: year, make, and model (example: "2000 Yamaha Grizzly")
+   - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
+   - If they only give partial info, ask for what's missing
 
 Be conversational and natural. Ask one question at a time.
 If the caller provides multiple pieces of information at once, acknowledge what you heard and ask for the next missing field.
@@ -72,11 +72,14 @@ class TwilioMediaStreamHandler:
     async def start(self):
         """Start handling the media stream"""
         try:
+            print(f"=== HANDLER START: call_sid={self.call_sid} ===", flush=True)
             logger.info(f"Starting media stream handler for call {self.call_sid}")
 
             # Connect to OpenAI FIRST (before DB) - this is the slow operation
+            print("=== CONNECTING TO OPENAI ===", flush=True)
             logger.info("Attempting to connect to OpenAI Realtime API...")
             await self._connect_to_openai()
+            print("=== OPENAI CONNECTED ===", flush=True)
             logger.info("Successfully connected to OpenAI Realtime API")
 
             # Get or create database session (fast operation, do after OpenAI)
@@ -140,7 +143,7 @@ class TwilioMediaStreamHandler:
 
 IMPORTANT: The caller is calling from {self.phone_speech}. After your greeting, ask them: "I see you're calling from {self.phone_speech}. Is this the best number to reach you?"
 
-If they say yes, record the phone as: {self.caller_phone}
+If they say yes, record the phone as: {self.caller_phone} and DO NOT repeat the number back. Simply move on to the next question.
 If they say no, ask them for the correct phone number."""
 
         # Configure the session

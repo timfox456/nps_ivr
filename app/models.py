@@ -22,7 +22,7 @@ class ConversationSession(Base):
 
 REQUIRED_FIELDS = [
     "full_name",
-    "address",
+    "zip_code",
     "phone",
     "email",
     "vehicle_make",
@@ -32,7 +32,7 @@ REQUIRED_FIELDS = [
 
 FIELD_PRETTY = {
     "full_name": "Full Name",
-    "address": "Address",
+    "zip_code": "ZIP Code",
     "phone": "Phone",
     "email": "Email",
     "vehicle_make": "Make of Vehicle",

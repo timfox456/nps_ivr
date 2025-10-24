@@ -16,7 +16,7 @@ def client() -> OpenAI:
 
 DEFAULT_QUESTIONS = {
     "full_name": "What is your full name?",
-    "address": "What state do you reside in?",
+    "zip_code": "What is your ZIP code?",
     "phone": "What is the best phone number to reach you?",
     "email": "What is your email address?",
     "vehicle_make": "What is the make of the vehicle?",
@@ -51,7 +51,7 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
 
     sys = (
         "You are a lead intake assistant for National Powersports Auctions (NPA), helping customers sell their powersports vehicles. "
-        "From the user's message, extract any of these fields if present: full_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
+        "From the user's message, extract any of these fields if present: full_name, zip_code, phone, email, vehicle_make, vehicle_model, vehicle_year. "
         f"{context_hint}"
         "CRITICAL: For 'full_name', you should extract the complete name (first and last). "
         "If the user provides TWO or more words (like 'Tim Fox', 'John Smith', 'Sarah Johnson'), accept it as a complete full_name. "
@@ -61,7 +61,7 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "- 'John Smith' → Extract as full_name: 'John Smith' (COMPLETE) "
         "- 'John' → Do not extract yet, ask 'Thanks John! And what is your last name?' "
         "- 'Smith' → Do not extract yet, ask for first name. "
-        "IMPORTANT: For the 'address' field, we only need the STATE of residence. If the user provides a full address, extract only the state abbreviation or name. "
+        "IMPORTANT: For the 'zip_code' field, extract the 5-digit ZIP code. If the user provides ZIP+4 format (12345-6789), extract only the first 5 digits. "
         "IMPORTANT: When the user provides a short direct answer, use the conversation context to infer which field they're answering. "
         "Look at the known_state to see what fields are still missing. "
         "IMPORTANT: For EMAIL addresses from voice input, common transcription patterns: "
