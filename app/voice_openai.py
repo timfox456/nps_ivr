@@ -83,11 +83,15 @@ class TwilioMediaStreamHandler:
             logger.info("Successfully connected to OpenAI Realtime API")
 
             # Get or create database session (fast operation, do after OpenAI)
+            print("=== CREATING DB SESSION ===", flush=True)
             self.db = SessionLocal()
+            print("=== GETTING OR CREATING SESSION ===", flush=True)
             self.session = self._get_or_create_session()
+            print(f"=== DB SESSION READY: {self.session.id} ===", flush=True)
             logger.info(f"Database session ready: {self.session.id}")
 
             # Start handling messages from both Twilio and OpenAI
+            print("=== STARTING MESSAGE HANDLERS ===", flush=True)
             logger.info("Starting message handlers")
             await asyncio.gather(
                 self._handle_twilio_messages(),
@@ -172,8 +176,11 @@ If they say no, ask them for the correct phone number."""
     async def _handle_twilio_messages(self):
         """Handle incoming messages from Twilio Media Stream"""
         try:
+            print(f"=== TWILIO HANDLER STARTED: stream_sid={self.stream_sid} ===", flush=True)
             logger.info(f"Starting to handle Twilio messages for stream {self.stream_sid}")
+            print("=== WAITING FOR TWILIO MESSAGES ===", flush=True)
             async for message in self.twilio_ws.iter_text():
+                print(f"=== TWILIO MESSAGE RECEIVED ===", flush=True)
                 data = json.loads(message)
                 event_type = data.get("event")
 
@@ -201,7 +208,10 @@ If they say no, ask them for the correct phone number."""
     async def _handle_openai_messages(self):
         """Handle incoming messages from OpenAI Realtime API"""
         try:
+            print("=== OPENAI HANDLER STARTED ===", flush=True)
+            print("=== WAITING FOR OPENAI MESSAGES ===", flush=True)
             async for message in self.openai_ws:
+                print(f"=== OPENAI MESSAGE RECEIVED ===", flush=True)
                 data = json.loads(message)
                 event_type = data.get("type")
 
