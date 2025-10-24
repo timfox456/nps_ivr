@@ -143,11 +143,28 @@ async def twilio_sms(request: Request):
     from_number = form.get("From") or "unknown"
     to_number = form.get("To") or "unknown"
     body = form.get("Body", "").strip()
-    sms_sid = form.get("SmsSid") or form.get("MessageSid") or from_number or "sms"
+    # Use from_number as session key so all messages from same number are in same conversation
+    session_key = from_number
 
     db = SessionLocal()
     try:
-        session = get_or_create_session(db, "sms", sms_sid, from_number, to_number)
+        session = get_or_create_session(db, "sms", session_key, from_number, to_number)
+
+        # Check for reset keywords
+        reset_keywords = ["hi", "hello", "restart", "reset", "start over", "start again", "begin"]
+        if any(keyword in body.lower() for keyword in reset_keywords):
+            # Reset the session state
+            session.state = {}
+            session.last_prompt_field = "full_name"
+            session.last_prompt = "What's your full name?"
+            session.status = "open"
+            flag_modified(session, "state")
+            db.commit()
+
+            # Send welcome message
+            resp = MessagingResponse()
+            resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
+            return PlainTextResponse(str(resp), media_type="application/xml")
 
         # Pre-populate phone number from caller ID if not already set
         current_state = session.state or {}
@@ -247,6 +264,26 @@ async def twilio_voice_collect(request: Request):
     db = SessionLocal()
     try:
         session = get_or_create_session(db, "voice", call_sid, form.get("From"), form.get("To"))
+
+        # Check for reset keywords
+        reset_keywords = ["restart", "reset", "start over", "start again", "begin again"]
+        if any(keyword in speech_result.lower() for keyword in reset_keywords):
+            # Reset the session state
+            session.state = {}
+            session.last_prompt_field = "full_name"
+            session.last_prompt = "What's your full name?"
+            session.status = "open"
+            flag_modified(session, "state")
+            db.commit()
+
+            # Send welcome message and ask for name
+            resp = VoiceResponse()
+            gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
+            gather.say("Restarting. Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
+            resp.append(gather)
+            resp.redirect("/twilio/voice/collect")
+            return PlainTextResponse(str(resp), media_type="application/xml")
+
         current_state = session.state or {}
 
         # Clean up phone confirmation flag if phone is already saved
