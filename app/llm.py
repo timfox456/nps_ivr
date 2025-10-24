@@ -15,8 +15,7 @@ def client() -> OpenAI:
     return _client
 
 DEFAULT_QUESTIONS = {
-    "first_name": "What is your first name?",
-    "last_name": "What is your last name?",
+    "full_name": "What is your full name?",
     "address": "What state do you reside in?",
     "phone": "What is the best phone number to reach you?",
     "email": "What is your email address?",
@@ -52,13 +51,16 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
 
     sys = (
         "You are a lead intake assistant for National Powersports Auctions (NPA), helping customers sell their powersports vehicles. "
-        "From the user's message, extract any of these fields if present: first_name, last_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
+        "From the user's message, extract any of these fields if present: full_name, address, phone, email, vehicle_make, vehicle_model, vehicle_year. "
         f"{context_hint}"
+        "CRITICAL: For 'full_name', you should extract the complete name (first and last). "
+        "If the user provides what appears to be only a single name (like just 'John' or 'Smith'), ask for clarification by requesting their full name. "
+        "For example, if they say 'John', your next_question should be 'Thanks John! And what is your last name?' "
+        "Only accept single-word names if the context strongly indicates it's their complete preferred name. "
+        "If they provide a full name like 'John Smith' or 'Sarah Johnson', extract it as full_name: 'John Smith'. "
         "IMPORTANT: For the 'address' field, we only need the STATE of residence. If the user provides a full address, extract only the state abbreviation or name. "
-        "IMPORTANT: When the user provides a short direct answer (like just 'Smith' or 'Fox'), use the conversation context to infer which field they're answering. "
+        "IMPORTANT: When the user provides a short direct answer, use the conversation context to infer which field they're answering. "
         "Look at the known_state to see what fields are still missing. "
-        "For example, if last_name is missing and they say 'Smith', extract it as last_name: 'Smith'. "
-        "Another example: if they were just asked for last_name and say 'Fox', extract it as last_name: 'Fox' (NOT first_name). "
         "IMPORTANT: For EMAIL addresses from voice input, common transcription patterns: "
         "'at' means '@', 'dot' means '.', 'underscore' means '_', 'dash' or 'hyphen' means '-'. "
         "Examples: 'tfox at yahoo dot com' = 'tfox@yahoo.com', 'john dot smith at gmail dot com' = 'john.smith@gmail.com'. "

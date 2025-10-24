@@ -21,8 +21,7 @@ class ConversationSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 REQUIRED_FIELDS = [
-    "first_name",
-    "last_name",
+    "full_name",
     "address",
     "phone",
     "email",
@@ -32,8 +31,7 @@ REQUIRED_FIELDS = [
 ]
 
 FIELD_PRETTY = {
-    "first_name": "First Name",
-    "last_name": "Last Name",
+    "full_name": "Full Name",
     "address": "Address",
     "phone": "Phone",
     "email": "Email",

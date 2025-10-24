@@ -127,8 +127,7 @@ def get_or_create_session(db: Session, channel: str, session_key: str, from_numb
     return obj
 
 REQUIRED_FIELDS = [
-    "first_name",
-    "last_name",
+    "full_name",
     "address",
     "phone",
     "email",
@@ -165,10 +164,10 @@ async def twilio_sms(request: Request):
         # Send welcome message for first interaction
         if is_first_message:
             resp = MessagingResponse()
-            resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your first name?")
+            resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
             session.state = current_state
-            session.last_prompt_field = "first_name"
-            session.last_prompt = "What's your first name?"
+            session.last_prompt_field = "full_name"
+            session.last_prompt = "What's your full name?"
             flag_modified(session, "state")
             db.commit()
             return PlainTextResponse(str(resp), media_type="application/xml")
@@ -230,7 +229,7 @@ async def twilio_voice(request: Request):
             gather.say(f"Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. I see you're calling from {phone_speech}. Is this the best number to reach you? Please say yes or no.")
         else:
             # No caller ID available, proceed normally
-            gather.say("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your first name?")
+            gather.say("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
 
         resp.append(gather)
         resp.redirect("/twilio/voice/collect")
@@ -274,10 +273,10 @@ async def twilio_voice_collect(request: Request):
                 flag_modified(session, "state")
                 db.commit()
 
-                # Continue with normal flow - ask for first name
+                # Continue with normal flow - ask for full name
                 resp = VoiceResponse()
                 gather = Gather(input="speech dtmf", action="/twilio/voice/collect", method="POST", timeout=6, speechTimeout="auto")
-                gather.say("Great! Now, what's your first name?")
+                gather.say("Great! Now, what's your full name?")
                 resp.append(gather)
                 resp.redirect("/twilio/voice/collect")
                 return PlainTextResponse(str(resp), media_type="application/xml")

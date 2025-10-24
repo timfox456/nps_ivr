@@ -55,7 +55,7 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
     Args:
         payload: Dictionary containing lead information with keys:
             Required fields collected by IVR:
-            - first_name, last_name, phone, email
+            - full_name, phone, email
             - address (STATE only)
             - vehicle_make, vehicle_model, vehicle_year
 
@@ -83,6 +83,12 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
     # Construct the LeadCreate endpoint
     url = settings.npa_api_base_url.rstrip("/") + "/api/Lead/LeadCreate"
 
+    # Split full_name into first and last name for API
+    full_name = payload.get("full_name", "")
+    name_parts = full_name.split(None, 1)  # Split on first whitespace
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+
     # Map our collected fields to NPA API format
     # Based on the Swagger API schema (camelCase field names)
     data = {
@@ -92,8 +98,8 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
         "password": password,
         "email": payload.get("email", ""),
         "phone": payload.get("phone", ""),
-        "firstName": payload.get("first_name", ""),
-        "lastName": payload.get("last_name", ""),
+        "firstName": first_name,
+        "lastName": last_name,
         "zip": payload.get("zipcode", "00000"),  # Default placeholder - not collected by IVR
         "vin": payload.get("vin", "N/A"),  # Default to "N/A" if not provided
         "milesHours": payload.get("miles_hours", "1"),  # Default to "1" if not provided
@@ -117,7 +123,7 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
         "leadSource": settings.npa_lead_source
     }
 
-    logger.info(f"Creating NPA lead for {data['firstName']} {data['lastName']}")
+    logger.info(f"Creating NPA lead for {full_name}")
 
     try:
         headers = {
