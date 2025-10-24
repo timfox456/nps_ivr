@@ -690,19 +690,29 @@ async def twilio_voice_realtime_proxied(request: Request):
     """
     form = dict(await request.form())
     call_sid = form.get("CallSid") or "call"
+    from_number = form.get("From") or "unknown"
 
     logger.info(f"Voice call received: {call_sid}")
+
+    # Check if we can extract caller ID
+    caller_phone, phone_speech = extract_caller_phone(from_number)
 
     # Return TwiML that connects to our WebSocket endpoint
     # Use the full host from request headers (includes ngrok domain)
     host = request.headers.get('host', request.url.hostname)
     resp = VoiceResponse()
 
-    # Add a Say as fallback in case stream fails
-    resp.say("Connecting to voice assistant. Please wait.")
+    # REMOVED "Please wait" message to avoid awkward silence gap
+    # OpenAI greeting will play as soon as connection is established
 
     connect = Connect()
     stream = Stream(url=f'wss://{host}/twilio/voice/stream')
+
+    # Pass caller phone info as custom parameters
+    if caller_phone and phone_speech:
+        stream.parameter(name="caller_phone", value=caller_phone)
+        stream.parameter(name="phone_speech", value=phone_speech)
+
     connect.append(stream)
     resp.append(connect)
 
@@ -722,6 +732,7 @@ async def twilio_voice_stream(websocket: WebSocket):
     call_sid = None
     try:
         await websocket.accept()
+        print("=== PROXIED WEBSOCKET ACCEPTED ===", flush=True)
         logger.info("WebSocket connection accepted")
 
         # Twilio sends messages in this order: connected, start, media, media, ...
@@ -742,9 +753,17 @@ async def twilio_voice_stream(websocket: WebSocket):
                 stream_sid = data["start"]["streamSid"]
                 logger.info(f"Starting OpenAI Realtime stream for call {call_sid}, stream {stream_sid}")
 
+                # Extract custom parameters (caller phone info)
+                custom_params = data["start"].get("customParameters", {})
+                caller_phone = custom_params.get("caller_phone")
+                phone_speech = custom_params.get("phone_speech")
+
                 # Create handler and start processing
-                # Pass the start data to the handler since we already consumed it
-                handler = TwilioMediaStreamHandler(websocket, call_sid, stream_sid)
+                handler = TwilioMediaStreamHandler(
+                    websocket, call_sid, stream_sid,
+                    caller_phone=caller_phone,
+                    phone_speech=phone_speech
+                )
                 await handler.start()
                 break
 
@@ -774,15 +793,29 @@ async def twilio_voice_realtime_optimized(request: Request):
     """
     form = dict(await request.form())
     call_sid = form.get("CallSid") or "call"
+    from_number = form.get("From") or "unknown"
 
     logger.info(f"Optimized voice call: {call_sid}")
+    logger.info(f"Request headers: {dict(request.headers)}")
+
+    # Check if we can extract caller ID
+    caller_phone, phone_speech = extract_caller_phone(from_number)
 
     host = request.headers.get('host', request.url.hostname)
+    logger.info(f"Using host for WebSocket URL: {host}")
     resp = VoiceResponse()
-    resp.say("Connecting.")
+
+    # REMOVED "Connecting." message to avoid awkward silence gap
+    # OpenAI greeting will play as soon as connection is established
 
     connect = Connect()
     stream = Stream(url=f'wss://{host}/twilio/voice/stream-optimized')
+
+    # Pass caller phone info as custom parameters
+    if caller_phone and phone_speech:
+        stream.parameter(name="caller_phone", value=caller_phone)
+        stream.parameter(name="phone_speech", value=phone_speech)
+
     connect.append(stream)
     resp.append(connect)
 
@@ -795,26 +828,40 @@ async def twilio_voice_stream_optimized(websocket: WebSocket):
     call_sid = None
     try:
         await websocket.accept()
+        logger.info("Optimized WebSocket accepted")
 
         # Wait for start event
         while True:
             message = await websocket.receive_text()
             data = json.loads(message)
             event_type = data.get("event")
+            logger.info(f"Optimized WS received event: {event_type}")
 
             if event_type == "connected":
+                logger.info("Optimized WS: connected event")
                 continue
             elif event_type == "start":
                 call_sid = data["start"]["callSid"]
                 stream_sid = data["start"]["streamSid"]
+                logger.info(f"Optimized WS: start event for call {call_sid}")
+
+                # Extract custom parameters (caller phone info)
+                custom_params = data["start"].get("customParameters", {})
+                caller_phone = custom_params.get("caller_phone")
+                phone_speech = custom_params.get("phone_speech")
+                logger.info(f"Caller phone: {caller_phone}, speech: {phone_speech}")
 
                 # Use optimized handler
-                handler = OptimizedRealtimeHandler(websocket, call_sid, stream_sid)
+                handler = OptimizedRealtimeHandler(
+                    websocket, call_sid, stream_sid,
+                    caller_phone=caller_phone,
+                    phone_speech=phone_speech
+                )
                 await handler.start()
                 break
 
     except Exception as e:
-        logger.error(f"Optimized WS error {call_sid}: {e}")
+        logger.error(f"Optimized WS error {call_sid}: {e}", exc_info=True)
         try:
             await websocket.close()
         except:
@@ -825,12 +872,12 @@ async def twilio_voice_stream_optimized(websocket: WebSocket):
 @app.post("/twilio/voice", response_class=PlainTextResponse)
 async def twilio_voice(request: Request):
     """
-    Default voice endpoint - currently uses proxied mode for testing
+    Default voice endpoint - BACK TO PROXIED (Optimized has issues)
 
-    Change to optimized for production:
-    return await twilio_voice_realtime_optimized(request)
+    Optimized version hangs waiting for Twilio WebSocket events.
+    Sticking with proxied version which works reliably.
     """
-    # For now, use proxied mode with full logging
+    # Using proxied mode - it works!
     return await twilio_voice_realtime_proxied(request)
 
 

@@ -58,10 +58,13 @@ When you have all the information, thank them and let them know an agent will co
 class TwilioMediaStreamHandler:
     """Handles Twilio Media Stream WebSocket connection and OpenAI Realtime API"""
 
-    def __init__(self, twilio_ws: WebSocket, call_sid: str, stream_sid: str = None):
+    def __init__(self, twilio_ws: WebSocket, call_sid: str, stream_sid: str = None,
+                 caller_phone: str = None, phone_speech: str = None):
         self.twilio_ws = twilio_ws
         self.call_sid = call_sid
         self.stream_sid = stream_sid
+        self.caller_phone = caller_phone
+        self.phone_speech = phone_speech
         self.openai_ws: Optional[websockets.WebSocketClientProtocol] = None
         self.session: Optional[ConversationSession] = None
         self.db: Optional[Session] = None
@@ -71,17 +74,15 @@ class TwilioMediaStreamHandler:
         try:
             logger.info(f"Starting media stream handler for call {self.call_sid}")
 
-            # Get or create database session
-            self.db = SessionLocal()
-            logger.info("Database session created")
-
-            self.session = self._get_or_create_session()
-            logger.info(f"Conversation session ready: {self.session.id}")
-
-            # Connect to OpenAI Realtime API
+            # Connect to OpenAI FIRST (before DB) - this is the slow operation
             logger.info("Attempting to connect to OpenAI Realtime API...")
             await self._connect_to_openai()
             logger.info("Successfully connected to OpenAI Realtime API")
+
+            # Get or create database session (fast operation, do after OpenAI)
+            self.db = SessionLocal()
+            self.session = self._get_or_create_session()
+            logger.info(f"Database session ready: {self.session.id}")
 
             # Start handling messages from both Twilio and OpenAI
             logger.info("Starting message handlers")
@@ -132,12 +133,22 @@ class TwilioMediaStreamHandler:
             additional_headers=headers
         )
 
+        # Build instructions with caller phone if available
+        instructions = SYSTEM_INSTRUCTIONS
+        if self.caller_phone and self.phone_speech:
+            instructions = f"""{SYSTEM_INSTRUCTIONS}
+
+IMPORTANT: The caller is calling from {self.phone_speech}. After your greeting, ask them: "I see you're calling from {self.phone_speech}. Is this the best number to reach you?"
+
+If they say yes, record the phone as: {self.caller_phone}
+If they say no, ask them for the correct phone number."""
+
         # Configure the session
         await self.openai_ws.send(json.dumps({
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": SYSTEM_INSTRUCTIONS,
+                "instructions": instructions,
                 "voice": "alloy",  # Can be: alloy, echo, fable, onyx, nova, shimmer
                 "input_audio_format": "g711_ulaw",  # Twilio uses µ-law
                 "output_audio_format": "g711_ulaw",

@@ -44,29 +44,39 @@ When you have all the information, thank them and let them know an agent will co
 class OptimizedRealtimeHandler:
     """Optimized handler with minimal overhead for production"""
 
-    def __init__(self, twilio_ws: WebSocket, call_sid: str, stream_sid: str):
+    def __init__(self, twilio_ws: WebSocket, call_sid: str, stream_sid: str,
+                 caller_phone: str = None, phone_speech: str = None):
         self.twilio_ws = twilio_ws
         self.call_sid = call_sid
         self.stream_sid = stream_sid
+        self.caller_phone = caller_phone
+        self.phone_speech = phone_speech
         self.openai_ws: Optional[websockets.WebSocketClientProtocol] = None
         self.conversation_data = {}  # Store data for end-of-call processing
 
     async def start(self):
         """Start optimized audio streaming"""
         try:
+            logger.info(f"[OPTIMIZED] Starting handler for call {self.call_sid}")
+
             # Connect to OpenAI
+            logger.info(f"[OPTIMIZED] Attempting OpenAI connection for {self.call_sid}...")
             await self._connect_openai()
+            logger.info(f"[OPTIMIZED] Connected to OpenAI for call {self.call_sid}")
 
             # Start bidirectional audio streaming
+            logger.info(f"[OPTIMIZED] Starting audio streaming for {self.call_sid}")
             await asyncio.gather(
                 self._forward_twilio_to_openai(),
                 self._forward_openai_to_twilio(),
                 return_exceptions=True
             )
+            logger.info(f"[OPTIMIZED] Audio streaming ended for {self.call_sid}")
 
         except Exception as e:
-            logger.error(f"Error in optimized handler {self.call_sid}: {e}")
+            logger.error(f"[OPTIMIZED] Error in handler {self.call_sid}: {e}", exc_info=True)
         finally:
+            logger.info(f"[OPTIMIZED] Cleaning up {self.call_sid}")
             await self._cleanup()
 
     async def _connect_openai(self):
@@ -81,12 +91,22 @@ class OptimizedRealtimeHandler:
             additional_headers=headers
         )
 
+        # Build instructions with caller phone if available
+        instructions = SYSTEM_INSTRUCTIONS
+        if self.caller_phone and self.phone_speech:
+            instructions = f"""{SYSTEM_INSTRUCTIONS}
+
+IMPORTANT: The caller is calling from {self.phone_speech}. After your greeting, ask them: "I see you're calling from {self.phone_speech}. Is this the best number to reach you?"
+
+If they say yes, record the phone as: {self.caller_phone}
+If they say no, ask them for the correct phone number."""
+
         # Minimal session config
         await self.openai_ws.send(json.dumps({
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": SYSTEM_INSTRUCTIONS,
+                "instructions": instructions,
                 "voice": "alloy",
                 "input_audio_format": "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
@@ -116,7 +136,7 @@ class OptimizedRealtimeHandler:
                     break
 
         except Exception as e:
-            logger.error(f"Twilio stream error {self.call_sid}: {e}")
+            logger.error(f"Twilio stream error {self.call_sid}: {e}", exc_info=True)
 
     async def _forward_openai_to_twilio(self):
         """Forward OpenAI audio to Twilio (optimized)"""
@@ -149,15 +169,21 @@ class OptimizedRealtimeHandler:
                     logger.error(f"OpenAI error {self.call_sid}: {data}")
 
         except Exception as e:
-            logger.error(f"OpenAI stream error {self.call_sid}: {e}")
+            logger.error(f"OpenAI stream error {self.call_sid}: {e}", exc_info=True)
 
     async def _cleanup(self):
         """Fast cleanup"""
         try:
-            if self.openai_ws and not self.openai_ws.closed:
-                await asyncio.wait_for(self.openai_ws.close(), timeout=1.0)
-        except:
-            pass
+            if self.openai_ws:
+                # Check if websocket is still open (handle both old and new websockets library)
+                try:
+                    is_closed = getattr(self.openai_ws, 'closed', False)
+                    if not is_closed:
+                        await asyncio.wait_for(self.openai_ws.close(), timeout=1.0)
+                except Exception as close_error:
+                    logger.debug(f"Error closing OpenAI websocket for {self.call_sid}: {close_error}")
+        except Exception as e:
+            logger.error(f"Cleanup error for {self.call_sid}: {e}")
 
         # TODO: Process conversation_data and save to database
         # This happens async after call ends, not blocking the audio stream
