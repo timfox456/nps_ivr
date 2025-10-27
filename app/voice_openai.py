@@ -47,7 +47,8 @@ Then collect the following information from the caller:
    - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
    - If they only give partial info, ask for what's missing
 
-CRITICAL CONFIRMATION RULES:
+CRITICAL CONFIRMATION RULES - ALWAYS CONFIRM THESE FIELDS:
+- FULL NAME: ALWAYS confirm by repeating it back: "Let me confirm, that's [First Name] [Last Name], is that correct?"
 - PHONE NUMBER from Caller ID: If confirming caller ID number and they say "yes", just move on - NO CONFIRMATION NEEDED
 - PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit: "Let me confirm, that's 4-7-0-8-0-7-3-3-1-7, is that correct?"
 - ZIP CODE: ALWAYS confirm by reading digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
@@ -55,14 +56,17 @@ CRITICAL CONFIRMATION RULES:
   * User says: "T-F-O-X at yahoo dot com"
   * You say: "I heard T-F-O-X at yahoo dot com. Let me confirm that's T as in Tango, F as in Foxtrot, O as in Oscar, X as in X-ray at yahoo dot com. Is that correct?"
   * IMPORTANT: Only use phonetic alphabet in YOUR confirmation, not when initially hearing it
-- Use NATO alphabet for confirmation: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu
-- If user repeats email multiple times or seems frustrated, acknowledge and confirm more carefully
+- VEHICLE INFORMATION: ALWAYS confirm year, make, and model: "Let me confirm, that's a [Year] [Make] [Model], is that correct?"
+- Use NATO alphabet for email confirmation: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu
+- If user repeats any information multiple times or seems frustrated, acknowledge and confirm more carefully
 
 Be conversational and natural. Ask one question at a time.
 If the caller provides multiple pieces of information at once, acknowledge what you heard and ask for the next missing field.
 Be patient and helpful if they need clarification.
 
-When you have all the information, thank them and let them know an agent will contact them within 24 hours.
+When you have all the information, say EXACTLY: "Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
+
+CRITICAL: After saying goodbye, you MUST include the text "[CALL_COMPLETE]" in your response so the system knows to hang up the call.
 """
 
 
@@ -214,7 +218,7 @@ If they say no, ask them for the correct phone number."""
                         self.phone_speech = phone_speech
 
                         # Send caller ID info as a conversation item instead of updating instructions
-                        caller_id_message = f"SYSTEM INFO: The caller is calling from {phone_speech}. After your greeting, ask them: 'I see you're calling from {phone_speech}. Is this the best number to reach you?' If they say yes, record the phone as {caller_phone} and do NOT repeat the number back - simply move on to the next question. If they say no, ask for the correct number and confirm it digit by digit."
+                        caller_id_message = f"SYSTEM INFO: The caller is calling from {phone_speech} (this is a 10-digit US phone number). After your greeting, you MUST read back ALL 10 DIGITS: 'I see you're calling from {phone_speech}. Is this the best number to reach you?' CRITICAL: Count the digits - there must be exactly 10 digits when you say it. If they say yes, record the phone as {caller_phone} and do NOT repeat the number back - simply move on to the next question. If they say no, ask for the correct number and confirm it digit by digit."
 
                         await self.openai_ws.send(json.dumps({
                             "type": "conversation.item.create",
@@ -281,6 +285,31 @@ If they say no, ask them for the correct phone number."""
                 elif event_type == "response.done":
                     # Response completed
                     logger.info("Response completed")
+
+                    # Debug: Print the entire response structure
+                    print(f"=== RESPONSE.DONE DATA: {json.dumps(data, indent=2)} ===", flush=True)
+
+                    # Check if the response contains the call completion marker
+                    response = data.get("response", {})
+                    output = response.get("output", [])
+                    for item in output:
+                        if item.get("type") == "message":
+                            content = item.get("content", [])
+                            for c in content:
+                                if c.get("type") == "text":
+                                    text = c.get("text", "")
+                                    print(f"=== CHECKING TEXT FOR MARKER: {text} ===", flush=True)
+                                    if "[CALL_COMPLETE]" in text:
+                                        print("=== CALL COMPLETE MARKER DETECTED - HANGING UP ===", flush=True)
+                                        logger.info("Call complete marker detected, hanging up")
+                                        # Send Twilio hangup command
+                                        await self.twilio_ws.send_json({
+                                            "event": "stop",
+                                            "streamSid": self.stream_sid
+                                        })
+                                        # Close the WebSocket
+                                        await self.twilio_ws.close()
+                                        return
 
                 elif event_type == "input_audio_buffer.speech_started":
                     logger.info("User started speaking")
