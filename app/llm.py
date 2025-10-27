@@ -50,7 +50,7 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         context_hint = f"CRITICAL CONTEXT: The user was just asked for their '{last_asked_field}'. If they provide a simple answer (like a single name or word), extract it as '{last_asked_field}'. "
 
     sys = (
-        "You are a lead intake assistant for National Powersports Auctions (NPA), helping customers sell their powersports vehicles. "
+        "You are a lead intake assistant for PowerSportBuyers.com, helping customers sell their powersports vehicles. "
         "From the user's message, extract any of these fields if present: full_name, zip_code, phone, email, vehicle_make, vehicle_model, vehicle_year. "
         f"{context_hint}"
         "CRITICAL: For 'full_name', you should extract the complete name (first and last). "
@@ -61,7 +61,10 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "- 'John Smith' → Extract as full_name: 'John Smith' (COMPLETE) "
         "- 'John' → Do not extract yet, ask 'Thanks John! And what is your last name?' "
         "- 'Smith' → Do not extract yet, ask for first name. "
-        "IMPORTANT: For the 'zip_code' field, extract the 5-digit ZIP code. If the user provides ZIP+4 format (12345-6789), extract only the first 5 digits. "
+        "CRITICAL: For the 'zip_code' field, extract EXACTLY 5 digits. ZIP code MUST be 5 digits. "
+        "If the user provides 4 or fewer digits, do NOT extract it - ask them to provide all 5 digits. "
+        "If the user provides ZIP+4 format (12345-6789 or 123456789), extract ONLY the first 5 digits and ignore the rest. "
+        "Examples: '30093' → zip_code: '30093' (VALID), '7265' → Do NOT extract, ask for 5-digit ZIP, '30093-1234' → zip_code: '30093' (extract first 5 only). "
         "IMPORTANT: When the user provides a short direct answer, use the conversation context to infer which field they're answering. "
         "Look at the known_state to see what fields are still missing. "
         "IMPORTANT: For EMAIL addresses from voice input, common transcription patterns: "

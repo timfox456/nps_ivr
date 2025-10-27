@@ -34,30 +34,32 @@ OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
 OPENAI_MODEL = "gpt-4o-realtime-preview-2024-10-01"
 
 # System instructions for the AI assistant
-SYSTEM_INSTRUCTIONS = """You are a friendly AI assistant for National Powersport Buyers, where we make selling your powersport vehicle stress free.
+SYSTEM_INSTRUCTIONS = """You are a friendly AI assistant for PowerSportBuyers.com, where we make selling your powersport vehicle stress free.
 
-Start by saying: "Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle."
+Start by saying: "Thank you for calling Power Sport Buyers dot com, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle."
 
 Then collect the following information from the caller:
 1. Full name
-2. ZIP code (5 digits)
+2. ZIP code (MUST be exactly 5 digits)
 3. Phone number
-4. Email address
-5. Vehicle information: year, make, and model (example: "2000 Yamaha Grizzly")
+4. Vehicle information: year, make, and model (example: "2000 Yamaha Grizzly")
    - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
    - If they only give partial info, ask for what's missing
+
+NOTE: Do NOT ask for email address over the phone - we will collect that later.
+
+ZIP CODE VALIDATION RULES:
+- ZIP code MUST be exactly 5 digits
+- If caller provides 4 digits or less, ask them to provide all 5 digits
+- If caller provides ZIP+4 format (9 digits like "30093-1234" or "300931234"), only use the first 5 digits and ignore the extra 4
+- ALWAYS confirm the 5-digit ZIP code by reading it back digit by digit
 
 CRITICAL CONFIRMATION RULES - ALWAYS CONFIRM THESE FIELDS:
 - FULL NAME: ALWAYS confirm by repeating it back: "Let me confirm, that's [First Name] [Last Name], is that correct?"
 - PHONE NUMBER from Caller ID: If confirming caller ID number and they say "yes", just move on - NO CONFIRMATION NEEDED
 - PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit: "Let me confirm, that's 4-7-0-8-0-7-3-3-1-7, is that correct?"
-- ZIP CODE: ALWAYS confirm by reading digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
-- EMAIL: First acknowledge what you heard, then confirm using NATO phonetic alphabet. Example:
-  * User says: "T-F-O-X at yahoo dot com"
-  * You say: "I heard T-F-O-X at yahoo dot com. Let me confirm that's T as in Tango, F as in Foxtrot, O as in Oscar, X as in X-ray at yahoo dot com. Is that correct?"
-  * IMPORTANT: Only use phonetic alphabet in YOUR confirmation, not when initially hearing it
+- ZIP CODE: ALWAYS confirm by reading the 5 digits back digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
 - VEHICLE INFORMATION: ALWAYS confirm year, make, and model: "Let me confirm, that's a [Year] [Make] [Model], is that correct?"
-- Use NATO alphabet for email confirmation: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu
 - If user repeats any information multiple times or seems frustrated, acknowledge and confirm more carefully
 
 Be conversational and natural. Ask one question at a time.
@@ -65,8 +67,6 @@ If the caller provides multiple pieces of information at once, acknowledge what 
 Be patient and helpful if they need clarification.
 
 When you have all the information, say EXACTLY: "Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
-
-CRITICAL: After saying goodbye, you MUST include the text "[CALL_COMPLETE]" in your response so the system knows to hang up the call.
 """
 
 
@@ -286,31 +286,6 @@ If they say no, ask them for the correct phone number."""
                     # Response completed
                     logger.info("Response completed")
 
-                    # Debug: Print the entire response structure
-                    print(f"=== RESPONSE.DONE DATA: {json.dumps(data, indent=2)} ===", flush=True)
-
-                    # Check if the response contains the call completion marker
-                    response = data.get("response", {})
-                    output = response.get("output", [])
-                    for item in output:
-                        if item.get("type") == "message":
-                            content = item.get("content", [])
-                            for c in content:
-                                if c.get("type") == "text":
-                                    text = c.get("text", "")
-                                    print(f"=== CHECKING TEXT FOR MARKER: {text} ===", flush=True)
-                                    if "[CALL_COMPLETE]" in text:
-                                        print("=== CALL COMPLETE MARKER DETECTED - HANGING UP ===", flush=True)
-                                        logger.info("Call complete marker detected, hanging up")
-                                        # Send Twilio hangup command
-                                        await self.twilio_ws.send_json({
-                                            "event": "stop",
-                                            "streamSid": self.stream_sid
-                                        })
-                                        # Close the WebSocket
-                                        await self.twilio_ws.close()
-                                        return
-
                 elif event_type == "input_audio_buffer.speech_started":
                     logger.info("User started speaking")
                     # Optionally interrupt current playback
@@ -328,8 +303,12 @@ If they say no, ask them for the correct phone number."""
         """Clean up connections"""
         logger.info(f"Cleaning up media stream for call {self.call_sid}")
         try:
-            if self.openai_ws and not self.openai_ws.closed:
-                await asyncio.wait_for(self.openai_ws.close(), timeout=2.0)
+            if self.openai_ws:
+                # Check if websocket has a close method and is not already closed
+                if hasattr(self.openai_ws, 'close'):
+                    # For websockets library, check if connection is open
+                    if not (hasattr(self.openai_ws, 'closed') and self.openai_ws.closed):
+                        await asyncio.wait_for(self.openai_ws.close(), timeout=2.0)
         except Exception as e:
             logger.warning(f"Error closing OpenAI websocket: {e}")
 

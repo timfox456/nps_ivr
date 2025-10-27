@@ -96,7 +96,7 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
         "dataProviderDealerToken": "",
         "username": username,
         "password": password,
-        "email": payload.get("email", ""),
+        "email": payload.get("email", "noemail@placeholder.com"),  # Placeholder for voice calls without email
         "phone": payload.get("phone", ""),
         "firstName": first_name,
         "lastName": last_name,
