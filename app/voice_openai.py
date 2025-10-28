@@ -232,12 +232,13 @@ If they say no, ask them for the correct phone number."""
                             }
                         }))
 
-                        # Trigger a response
-                        await self.openai_ws.send(json.dumps({
-                            "type": "response.create"
-                        }))
-
                         print(f"=== SENT CALLER ID TO OPENAI ===", flush=True)
+
+                    # Always trigger an initial response to start the greeting
+                    await self.openai_ws.send(json.dumps({
+                        "type": "response.create"
+                    }))
+                    print(f"=== TRIGGERED INITIAL RESPONSE ===", flush=True)
 
                 elif event_type == "media":
                     # Forward audio to OpenAI
@@ -261,9 +262,9 @@ If they say no, ask them for the correct phone number."""
             print("=== OPENAI HANDLER STARTED ===", flush=True)
             print("=== WAITING FOR OPENAI MESSAGES ===", flush=True)
             async for message in self.openai_ws:
-                print(f"=== OPENAI MESSAGE RECEIVED ===", flush=True)
                 data = json.loads(message)
                 event_type = data.get("type")
+                print(f"=== OPENAI MESSAGE: {event_type} ===", flush=True)
 
                 if event_type == "response.audio.delta":
                     # Stream audio back to Twilio
@@ -294,6 +295,8 @@ If they say no, ask them for the correct phone number."""
                     logger.info("User stopped speaking")
 
                 elif event_type == "error":
+                    error_details = json.dumps(data, indent=2)
+                    print(f"=== OPENAI ERROR: {error_details} ===", flush=True)
                     logger.error(f"OpenAI error: {data}")
 
         except Exception as e:

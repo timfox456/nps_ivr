@@ -245,12 +245,49 @@ def validate_vehicle_year(year: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def validate_zip_code(zip_code: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate ZIP code.
+
+    Must be exactly 5 digits and cannot be from Alaska or Hawaii.
+    - Hawaii ZIP codes: 967xx, 968xx
+    - Alaska ZIP codes: 995xx, 996xx, 997xx, 998xx, 999xx
+
+    Returns:
+        Tuple of (is_valid, error_message)
+        - (True, None) if valid
+        - (False, error_message) if invalid
+    """
+    if not zip_code or not zip_code.strip():
+        return False, "I didn't catch your ZIP code"
+
+    zip_str = zip_code.strip()
+
+    # Extract only digits
+    digits = re.sub(r'\D', '', zip_str)
+
+    # Must be exactly 5 digits
+    if len(digits) != 5:
+        return False, f"ZIP code must be exactly 5 digits (I heard {len(digits)} digits)"
+
+    # Check for Hawaii ZIP codes (967xx, 968xx)
+    if digits.startswith('967') or digits.startswith('968'):
+        return False, "we don't currently service Hawaii"
+
+    # Check for Alaska ZIP codes (995xx, 996xx, 997xx, 998xx, 999xx)
+    if digits.startswith('995') or digits.startswith('996') or \
+       digits.startswith('997') or digits.startswith('998') or digits.startswith('999'):
+        return False, "we don't currently service Alaska"
+
+    return True, None
+
+
 def validate_and_normalize_field(field_name: str, value: str) -> Tuple[str, bool, Optional[str]]:
     """
     Validate and normalize a field value.
 
     Args:
-        field_name: Name of the field (e.g., 'email', 'phone')
+        field_name: Name of the field (e.g., 'email', 'phone', 'zip_code')
         value: The value to validate
 
     Returns:
@@ -271,6 +308,14 @@ def validate_and_normalize_field(field_name: str, value: str) -> Tuple[str, bool
 
     elif field_name == "vehicle_year":
         is_valid, error = validate_vehicle_year(value)
+        return value, is_valid, error
+
+    elif field_name == "zip_code":
+        is_valid, error = validate_zip_code(value)
+        # Return only the 5 digits if valid
+        if is_valid:
+            digits = re.sub(r'\D', '', value)
+            return digits[:5], is_valid, error
         return value, is_valid, error
 
     # For other fields, just return as-is
