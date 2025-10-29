@@ -292,6 +292,50 @@ If they say no, ask them for the correct phone number."""
                     # Response completed
                     logger.info("Response completed")
 
+                    # Check if this response contains the call completion marker
+                    response = data.get("response", {})
+                    output = response.get("output", [])
+                    for item in output:
+                        if item.get("type") == "message":
+                            content = item.get("content", [])
+                            for c in content:
+                                # Check both text and audio transcript fields
+                                text = ""
+                                if c.get("type") == "text":
+                                    text = c.get("text", "")
+                                elif c.get("type") == "audio":
+                                    text = c.get("transcript", "")
+
+                                # Look for the goodbye message to detect call completion
+                                if text and ("Have a great day, goodbye" in text or "have a great day, goodbye" in text.lower()):
+                                    print("=== GOODBYE MESSAGE DETECTED - CALL COMPLETE ===", flush=True)
+                                    logger.info("Goodbye message detected - will hangup after 20 second delay")
+
+                                    # Wait 20 seconds for the goodbye audio to finish playing
+                                    await asyncio.sleep(20)
+
+                                    print("=== HANGING UP AFTER DELAY ===", flush=True)
+
+                                    # Send a mark event to Twilio to signal clean completion
+                                    try:
+                                        await self.twilio_ws.send_json({
+                                            "event": "mark",
+                                            "streamSid": self.stream_sid,
+                                            "mark": {
+                                                "name": "call_complete"
+                                            }
+                                        })
+                                    except Exception as e:
+                                        logger.warning(f"Could not send mark event: {e}")
+
+                                    # Close the Twilio WebSocket gracefully with normal closure code
+                                    try:
+                                        await self.twilio_ws.close(code=1000, reason="call_complete")
+                                    except Exception as e:
+                                        logger.warning(f"Error closing Twilio WebSocket: {e}")
+
+                                    return
+
                 elif event_type == "input_audio_buffer.speech_started":
                     logger.info("User started speaking")
                     # Optionally interrupt current playback

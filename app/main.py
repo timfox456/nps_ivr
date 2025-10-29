@@ -718,8 +718,8 @@ async def twilio_voice_realtime_proxied(request: Request):
     connect.append(stream)
     resp.append(connect)
 
-    # Fallback if stream fails
-    resp.say("Sorry, we're experiencing technical difficulties. Please try again later.")
+    # After stream ends, just hangup silently
+    # The AI has already said goodbye, so no need for another message
     resp.hangup()
 
     logger.info(f"Returning TwiML with stream URL: wss://{host}/twilio/voice/stream")
