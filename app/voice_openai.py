@@ -61,15 +61,30 @@ ZIP CODE VALIDATION RULES:
 
 CRITICAL CONFIRMATION RULES - ALWAYS CONFIRM THESE FIELDS:
 - FULL NAME: ALWAYS confirm by repeating it back: "Let me confirm, that's [First Name] [Last Name], is that correct?"
+  * If they say NO or correct you, say "I apologize, what is the correct name?" and re-ask for their full name
+  * After getting the correction, confirm it again before moving on
 - PHONE NUMBER from Caller ID: If confirming caller ID number and they say "yes", just move on - NO CONFIRMATION NEEDED
 - PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit: "Let me confirm, that's 4-7-0-8-0-7-3-3-1-7, is that correct?"
+  * If they say NO, say "I apologize, let me get that again. What's your phone number?" and re-ask
+  * Confirm the corrected number digit by digit before moving on
 - ZIP CODE: ALWAYS confirm by reading the 5 digits back digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
+  * If they say NO, say "I apologize, what is your correct ZIP code?" and re-ask
+  * Confirm the corrected ZIP code before moving on
 - VEHICLE INFORMATION: ALWAYS confirm year, make, and model: "Let me confirm, that's a [Year] [Make] [Model], is that correct?"
+  * If they say NO, say "I apologize, what is the correct year, make, and model?" and re-ask
+  * Confirm the corrected information before moving on
 - If user repeats any information multiple times or seems frustrated, acknowledge and confirm more carefully
+
+CRITICAL: When user corrects information after you confirm it, you MUST re-ask for that same field and confirm it again. DO NOT move on to the next field until the current field is correctly confirmed.
 
 Be conversational and natural. Ask one question at a time.
 If the caller provides multiple pieces of information at once, acknowledge what you heard and ask for the next missing field.
 Be patient and helpful if they need clarification.
+
+HANDLING UNCLEAR OR NO RESPONSES:
+- If you hear silence, background noise, or unclear speech, say "I'm sorry, I didn't catch that. Could you please repeat?"
+- If caller says "hello?" or "are you there?", respond with "Yes, I'm here! Let me continue..." and repeat your last question
+- Never get stuck waiting - always ask a clarifying question if you're unsure what the caller said
 
 When you have all the information, say EXACTLY: "Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
 """
@@ -167,6 +182,8 @@ class TwilioMediaStreamHandler:
 
 IMPORTANT: The caller is calling from {self.phone_speech}. After your greeting, ask them: "I see you're calling from {self.phone_speech}. Is this the best number to reach you?"
 
+CRITICAL PRONUNCIATION: When saying the phone number, speak each digit SEPARATELY with a brief pause between each one. For example, say "nine... six... one... eight... three... eight..." NOT "nine hundred sixty one" or "nine sixty one". Each digit must be said individually.
+
 If they say yes, record the phone as: {self.caller_phone} and DO NOT repeat the number back. Simply move on to the next question.
 If they say no, ask them for the correct phone number."""
 
@@ -184,9 +201,9 @@ If they say no, ask them for the correct phone number."""
                 },
                 "turn_detection": {
                     "type": "server_vad",  # Server-side voice activity detection
-                    "threshold": 0.5,
+                    "threshold": 0.6,  # Increased from 0.5 to reduce false triggers (0.0-1.0, higher = less sensitive)
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
+                    "silence_duration_ms": 700  # Increased from 500ms to 700ms to require longer silence before considering speech done
                 }
             }
         }))
