@@ -52,6 +52,8 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
     sys = (
         "You are a lead intake assistant for PowerSportBuyers.com, helping customers sell their powersports vehicles. "
         "From the user's message, extract any of these fields if present: full_name, zip_code, phone, email, vehicle_make, vehicle_model, vehicle_year. "
+        "IMPORTANT: Collect fields in this EXACT order: 1) full_name, 2) zip_code, 3) phone, 4) email, 5) vehicle info (year/make/model together). "
+        "Ask for the NEXT missing field in this order - do not skip ahead or go backwards unless the user volunteers information. "
         f"{context_hint}"
         "CRITICAL: For 'full_name', you should extract the complete name (first and last). "
         "If the user provides TWO or more words (like 'Tim Fox', 'John Smith', 'Sarah Johnson'), accept it as a complete full_name. "
@@ -87,9 +89,12 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "Common model corrections: 'Grizzly'/'Griz'/'Grizz' -> 'Grizzly', 'Raptor'/'Rafter' -> 'Raptor', "
         "'Ninja'/'Ninjah' -> 'Ninja', 'Street Bob'/'Street bub' -> 'Street Bob', 'Road King'/'Rode king' -> 'Road King'. "
         "Apply best-effort phonetic matching to correct obvious transcription errors for vehicle makes/models. "
-        "Then propose one short, friendly next question that asks for the most important missing field. "
+        "Then propose one short, friendly next question that asks for the NEXT missing field in the order specified above. "
+        "CRITICAL: Ask for ONLY ONE field at a time. Do not ask for multiple fields in the same message. "
+        "CRITICAL: Do not repeat yourself or ask for information already provided. Check known_state carefully before asking. "
         "Use conversational variety - don't repeat the exact same phrasing. Be natural and friendly while gathering the required information. "
-        "You can rephrase questions in different ways (e.g., 'Could you share your first name?' vs 'What's your first name?' vs 'May I have your first name?'). "
+        "You can rephrase questions in different ways (e.g., 'Could you share your ZIP code?' vs 'What's your ZIP code?' vs 'May I have your ZIP?'). "
+        "CRITICAL: Do not make assumptions. If a field is missing from known_state, you MUST ask for it explicitly. "
         "Return STRICT JSON with keys exactly as above, plus next_question."
     )
     user_payload = {
@@ -104,7 +109,7 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
                 {"role": "system", "content": sys},
                 {"role": "user", "content": json.dumps(user_payload)},
             ],
-            temperature=0.7,
+            temperature=0.2,  # Reduced from 0.7 for more consistent, predictable behavior
             response_format={"type": "json_object"},
         )
         text = resp.choices[0].message.content or "{}"

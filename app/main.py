@@ -112,9 +112,10 @@ def extract_caller_phone(from_number: str | None) -> tuple[str | None, str | Non
     import re
     digits = re.sub(r'\D', '', normalized)
     if len(digits) == 10:
-        # Format each digit separately with spaces for proper TTS pronunciation
-        # e.g., "4 7 0, 8 0 7, 3 3 1 7" instead of "470-807-3317"
-        formatted_speech = f"{digits[0]} {digits[1]} {digits[2]}, {digits[3]} {digits[4]} {digits[5]}, {digits[6]} {digits[7]} {digits[8]} {digits[9]}"
+        # Format each digit separately with periods to force TTS to pause between each digit
+        # This prevents TTS from grouping digits like "nine hundred sixty one"
+        # e.g., "9. 6. 1. 8. 3. 8. 1. 0. 3. 8." instead of "961-838-1038"
+        formatted_speech = f"{digits[0]}. {digits[1]}. {digits[2]}. {digits[3]}. {digits[4]}. {digits[5]}. {digits[6]}. {digits[7]}. {digits[8]}. {digits[9]}."
         return normalized, formatted_speech
 
     return normalized, normalized
@@ -210,12 +211,32 @@ async def twilio_sms(request: Request):
 
         session.state = new_state
         flag_modified(session, "state")
+
         # Send lead when done
         if done and session.status != "closed":
             # Add channel info for lead creation
             new_state["_channel"] = "sms"
-            await create_lead(new_state)
-            session.status = "closed"
+            try:
+                await create_lead(new_state)
+                session.status = "closed"
+            except Exception as e:
+                # Log error but don't crash - still send response to user
+                import logging
+                logging.error(f"Failed to create lead, but continuing: {e}")
+
+                # Save failed lead to database for manual retry later
+                from .models import FailedLead
+                failed_lead = FailedLead(
+                    lead_data=new_state,
+                    error_message=str(e),
+                    channel="sms",
+                    session_id=session.id
+                )
+                db.add(failed_lead)
+
+                # Mark as closed anyway so we don't retry automatically
+                session.status = "closed"
+
         db.commit()
 
         resp = MessagingResponse()
