@@ -5,6 +5,7 @@ from openai import OpenAI
 from .config import settings
 from .models import missing_fields, FIELD_PRETTY
 from .validation import validate_and_normalize_field, normalize_transcribed_email
+from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type
 
 _client: OpenAI | None = None
 
@@ -164,6 +165,49 @@ def process_turn(user_text: str, state: Dict[str, Any], last_asked_field: str = 
         done = len(miss) == 0
 
         if done:
-            next_q = "Thank you for your information. I will start a file here and one of our agents will reach out to you in the next 24 hours to grab further information regarding your vehicle."
+            # Apply business rules validation before accepting the lead
+            rejection_reason = None
+
+            # Rule 1: Validate ZIP code (Alaska/Hawaii)
+            zip_code = new_state.get("zip_code", "")
+            if zip_code:
+                is_valid_zip, zip_error = validate_zip_code(zip_code)
+                if not is_valid_zip:
+                    rejection_reason = zip_error
+
+            # Rule 2: Validate vehicle eligibility (if ZIP is valid)
+            if not rejection_reason:
+                vehicle_year = new_state.get("vehicle_year")
+                vehicle_make = new_state.get("vehicle_make", "")
+                vehicle_model = new_state.get("vehicle_model", "")
+
+                if vehicle_year and vehicle_make and vehicle_model:
+                    # Convert year to int
+                    try:
+                        year_int = int(str(vehicle_year))
+                    except (ValueError, TypeError):
+                        year_int = 0
+
+                    # Infer vehicle type from make/model
+                    vehicle_type = categorize_vehicle_type(vehicle_make, vehicle_model)
+
+                    # Validate vehicle eligibility
+                    is_eligible, vehicle_error = validate_vehicle_eligibility(
+                        year_int, vehicle_make, vehicle_model, vehicle_type
+                    )
+
+                    if not is_eligible:
+                        rejection_reason = vehicle_error
+
+            # Set response based on validation
+            if rejection_reason:
+                # Lead is rejected - provide rejection message
+                next_q = f"{rejection_reason} Thank you for your time."
+                # Mark as done but rejected (handler will not submit to NPA)
+                new_state["_rejected"] = True
+                new_state["_rejection_reason"] = rejection_reason
+            else:
+                # Lead is accepted
+                next_q = "Thank you for your information. I will start a file here and one of our agents will reach out to you in the next 24 hours to grab further information regarding your vehicle."
 
     return new_state, next_q, done

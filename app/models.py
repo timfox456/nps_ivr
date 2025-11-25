@@ -34,6 +34,31 @@ class FailedLead(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     resolved: Mapped[bool] = mapped_column(Integer, default=0)  # 0=pending, 1=successfully submitted
 
+
+class SucceededLead(Base):
+    __tablename__ = "succeeded_leads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    lead_data: Mapped[Dict[str, Any]] = mapped_column(JSON)  # Complete lead JSON submitted
+    channel: Mapped[str] = mapped_column(String(16), index=True)  # 'sms' | 'voice'
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Link to conversation_sessions.id
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # When submitted to NPA API
+
+    # Optional fields for downstream reconciliation
+    npa_response: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # Response from NPA API if available
+
+
+class RejectedLead(Base):
+    __tablename__ = "rejected_leads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    lead_data: Mapped[Dict[str, Any]] = mapped_column(JSON)  # Complete lead information collected
+    rejection_reason: Mapped[str] = mapped_column(Text)  # Why lead was rejected (business rule)
+    rejection_category: Mapped[str] = mapped_column(String(32), index=True)  # 'zip_code' | 'vehicle_age' | 'vehicle_type' | 'electric' | 'slingshot'
+    channel: Mapped[str] = mapped_column(String(16), index=True)  # 'sms' | 'voice'
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Link to conversation_sessions.id
+    rejected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # When rejected
+
 REQUIRED_FIELDS = [
     "full_name",
     "zip_code",

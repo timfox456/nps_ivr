@@ -214,28 +214,64 @@ async def twilio_sms(request: Request):
 
         # Send lead when done
         if done and session.status != "closed":
-            # Add channel info for lead creation
-            new_state["_channel"] = "sms"
-            try:
-                await create_lead(new_state)
-                session.status = "closed"
-            except Exception as e:
-                # Log error but don't crash - still send response to user
-                import logging
-                logging.error(f"Failed to create lead, but continuing: {e}")
+            # Check if lead was rejected by business rules
+            is_rejected = new_state.get("_rejected", False)
 
-                # Save failed lead to database for manual retry later
-                from .models import FailedLead
-                failed_lead = FailedLead(
+            if is_rejected:
+                # Lead rejected - do not submit to NPA, save to rejected_leads table
+                session.status = "closed"
+                import logging
+                rejection_reason = new_state.get("_rejection_reason", "Unknown reason")
+                logging.info(f"Lead rejected for session {session.id}: {rejection_reason}")
+
+                # Save to rejected_leads table for analytics
+                from .models import RejectedLead
+                from .validation_rules import categorize_rejection
+
+                rejection_category = categorize_rejection(rejection_reason)
+                rejected_lead = RejectedLead(
                     lead_data=new_state,
-                    error_message=str(e),
+                    rejection_reason=rejection_reason,
+                    rejection_category=rejection_category,
                     channel="sms",
                     session_id=session.id
                 )
-                db.add(failed_lead)
+                db.add(rejected_lead)
+            else:
+                # Lead accepted - submit to NPA
+                # Add channel info for lead creation
+                new_state["_channel"] = "sms"
+                try:
+                    npa_response = await create_lead(new_state)
+                    session.status = "closed"
 
-                # Mark as closed anyway so we don't retry automatically
-                session.status = "closed"
+                    # Save succeeded lead to database for reconciliation
+                    from .models import SucceededLead
+                    succeeded_lead = SucceededLead(
+                        lead_data=new_state,
+                        channel="sms",
+                        session_id=session.id,
+                        npa_response=npa_response if isinstance(npa_response, dict) else None
+                    )
+                    db.add(succeeded_lead)
+
+                except Exception as e:
+                    # Log error but don't crash - still send response to user
+                    import logging
+                    logging.error(f"Failed to create lead, but continuing: {e}")
+
+                    # Save failed lead to database for manual retry later
+                    from .models import FailedLead
+                    failed_lead = FailedLead(
+                        lead_data=new_state,
+                        error_message=str(e),
+                        channel="sms",
+                        session_id=session.id
+                    )
+                    db.add(failed_lead)
+
+                    # Mark as closed anyway so we don't retry automatically
+                    session.status = "closed"
 
         db.commit()
 
@@ -687,8 +723,38 @@ async def twilio_voice_ivr_collect(request: Request):
         if done and session.status != "closed":
             # Add channel info for lead creation
             new_state["_channel"] = "voice"
-            await create_lead(new_state)
-            session.status = "closed"
+            try:
+                npa_response = await create_lead(new_state)
+                session.status = "closed"
+
+                # Save succeeded lead to database for reconciliation
+                from .models import SucceededLead
+                succeeded_lead = SucceededLead(
+                    lead_data=new_state,
+                    channel="voice",
+                    session_id=session.id,
+                    npa_response=npa_response if isinstance(npa_response, dict) else None
+                )
+                db.add(succeeded_lead)
+
+            except Exception as e:
+                # Log error but don't crash - still send response to user
+                import logging
+                logging.error(f"Failed to create lead, but continuing: {e}")
+
+                # Save failed lead to database for manual retry later
+                from .models import FailedLead
+                failed_lead = FailedLead(
+                    lead_data=new_state,
+                    error_message=str(e),
+                    channel="voice",
+                    session_id=session.id
+                )
+                db.add(failed_lead)
+
+                # Mark as closed anyway so we don't retry automatically
+                session.status = "closed"
+
         db.commit()
 
         resp = VoiceResponse()

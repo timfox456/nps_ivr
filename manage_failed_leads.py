@@ -63,12 +63,23 @@ async def retry_lead(lead_id: int):
         print(f"Lead data: {lead.lead_data}")
 
         try:
-            await create_lead(lead.lead_data)
+            npa_response = await create_lead(lead.lead_data)
 
             # Mark as resolved
             lead.resolved = 1
             lead.retry_count += 1
             lead.last_retry_at = datetime.utcnow()
+
+            # Save to succeeded_leads table for reconciliation
+            from app.models import SucceededLead
+            succeeded_lead = SucceededLead(
+                lead_data=lead.lead_data,
+                channel=lead.channel,
+                session_id=lead.session_id,
+                npa_response=npa_response if isinstance(npa_response, dict) else None
+            )
+            db.add(succeeded_lead)
+
             db.commit()
 
             print(f"✓ Successfully submitted lead {lead_id} to NPA API")

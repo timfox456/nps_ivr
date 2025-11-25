@@ -41,12 +41,21 @@ Start by saying: "Thank you for calling Power Sport Buyers dot com, where we mak
 Then collect the following information from the caller:
 1. Full name
 2. ZIP code (MUST be exactly 5 digits)
-3. Phone number
+3. Phone number (MUST be exactly 10 digits for US numbers)
 4. Vehicle information: year, make, and model (example: "2000 Yamaha Grizzly")
    - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
    - If they only give partial info, ask for what's missing
 
 NOTE: Do NOT ask for email address over the phone - we will collect that later.
+
+CRITICAL PHONE NUMBER RULES:
+- ALL US phone numbers are EXACTLY 10 digits (area code + number)
+- When reading back a phone number, you MUST say all 10 digits individually with pauses
+- Count to verify: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 digits
+- NEVER skip a digit or combine digits (don't say "twenty" instead of "two... zero")
+- Example: Say "seven... two... zero... three... eight... one... one... zero... eight... four" (that's 10 digits)
+- NEVER say "seven two zero three eight one zero eight four" (that's only 9 digits - WRONG!)
+- If you're given a phone number to read back, count the digits FIRST to make sure there are exactly 10
 
 ZIP CODE VALIDATION RULES - APPLY EVERY TIME INCLUDING CORRECTIONS:
 - ZIP code MUST be exactly 5 digits
@@ -104,6 +113,8 @@ class TwilioMediaStreamHandler:
         self.openai_ws: Optional[websockets.WebSocketClientProtocol] = None
         self.session: Optional[ConversationSession] = None
         self.db: Optional[Session] = None
+        self.goodbye_detected = False  # Track if goodbye was detected
+        self.last_audio_sent_time = None  # Track when last audio chunk was sent
 
     async def start(self):
         """Start handling the media stream"""
@@ -241,7 +252,26 @@ If they say no, ask them for the correct phone number."""
                         self.phone_speech = phone_speech
 
                         # Send caller ID info as a conversation item instead of updating instructions
-                        caller_id_message = f"SYSTEM INFO: The caller is calling from {phone_speech} (this is a 10-digit US phone number). After your greeting, you MUST read back ALL 10 DIGITS: 'I see you're calling from {phone_speech}. Is this the best number to reach you?' CRITICAL: Count the digits - there must be exactly 10 digits when you say it. If they say yes, record the phone as {caller_phone} and do NOT repeat the number back - simply move on to the next question. If they say no, ask for the correct number and confirm it digit by digit."
+                        # Extract individual digits for clearer pronunciation
+                        import re
+                        digits_only = re.sub(r'\D', '', caller_phone)
+                        digit_list = list(digits_only)  # ['7', '2', '0', '3', '8', '1', '1', '0', '8', '4']
+
+                        # Create explicit digit-by-digit instructions for OpenAI
+                        caller_id_message = f"""SYSTEM INFO: The caller is calling from phone number {caller_phone}.
+
+CRITICAL PHONE NUMBER PRONUNCIATION INSTRUCTIONS:
+This is a 10-digit US phone number. You MUST say it EXACTLY like this, pausing between each digit:
+"{digit_list[0]} ... {digit_list[1]} ... {digit_list[2]} ... {digit_list[3]} ... {digit_list[4]} ... {digit_list[5]} ... {digit_list[6]} ... {digit_list[7]} ... {digit_list[8]} ... {digit_list[9]}"
+
+That is: {digit_list[0]}, then {digit_list[1]}, then {digit_list[2]}, then {digit_list[3]}, then {digit_list[4]}, then {digit_list[5]}, then {digit_list[6]}, then {digit_list[7]}, then {digit_list[8]}, then {digit_list[9]}.
+
+COUNT THE DIGITS: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 - you MUST say all 10 digits.
+
+After your greeting, say: "I see you're calling from {digit_list[0]} ... {digit_list[1]} ... {digit_list[2]} ... {digit_list[3]} ... {digit_list[4]} ... {digit_list[5]} ... {digit_list[6]} ... {digit_list[7]} ... {digit_list[8]} ... {digit_list[9]}. Is this the best number to reach you?"
+
+If they say yes, record the phone as {caller_phone} and do NOT repeat the number back - simply move on to the next question.
+If they say no, ask for the correct number and confirm it digit by digit."""
 
                         await self.openai_ws.send(json.dumps({
                             "type": "conversation.item.create",
@@ -300,6 +330,9 @@ If they say no, ask them for the correct phone number."""
                                 "payload": audio_data
                             }
                         })
+                        # Track when we sent audio (for goodbye timing)
+                        import time
+                        self.last_audio_sent_time = time.time()
 
                 elif event_type == "conversation.item.created":
                     # Log conversation items
@@ -327,12 +360,30 @@ If they say no, ask them for the correct phone number."""
                                 # Look for the goodbye message to detect call completion
                                 if text and ("Have a great day, goodbye" in text or "have a great day, goodbye" in text.lower()):
                                     print("=== GOODBYE MESSAGE DETECTED - CALL COMPLETE ===", flush=True)
-                                    logger.info("Goodbye message detected - will hangup after 20 second delay")
+                                    logger.info("Goodbye message detected - extracting lead data and submitting")
 
-                                    # Wait 20 seconds for the goodbye audio to finish playing
-                                    await asyncio.sleep(20)
+                                    self.goodbye_detected = True
 
-                                    print("=== HANGING UP AFTER DELAY ===", flush=True)
+                                    # Extract lead data from conversation and submit (non-blocking)
+                                    await self._extract_and_submit_lead()
+
+                                    # Calculate smart wait time based on when last audio was sent
+                                    import time
+                                    if self.last_audio_sent_time:
+                                        # Audio typically takes 2-4 seconds to play at normal speed
+                                        # Add buffer for network latency and processing
+                                        time_since_last_audio = time.time() - self.last_audio_sent_time
+                                        # Wait maximum 5 seconds, minimum 2 seconds
+                                        # Reduce wait if audio was sent recently
+                                        wait_time = max(2.0, min(5.0, 5.0 - time_since_last_audio))
+                                        print(f"=== WAITING {wait_time:.1f}s FOR GOODBYE AUDIO TO FINISH ===", flush=True)
+                                        await asyncio.sleep(wait_time)
+                                    else:
+                                        # Fallback if we didn't track audio timing
+                                        print("=== WAITING 3s FOR GOODBYE AUDIO (fallback) ===", flush=True)
+                                        await asyncio.sleep(3)
+
+                                    print("=== HANGING UP AFTER AUDIO COMPLETE ===", flush=True)
 
                                     # Send a mark event to Twilio to signal clean completion
                                     try:
@@ -368,6 +419,216 @@ If they say no, ask them for the correct phone number."""
 
         except Exception as e:
             logger.error(f"Error handling OpenAI messages: {e}", exc_info=True)
+
+    async def _extract_and_submit_lead(self):
+        """Extract lead data from conversation transcript and submit to NPA API"""
+        try:
+            print("=== EXTRACTING LEAD DATA FROM CONVERSATION ===", flush=True)
+
+            # Request the full conversation transcript from OpenAI
+            await self.openai_ws.send(json.dumps({
+                "type": "conversation.list"
+            }))
+
+            # Wait for the response and collect all conversation messages
+            conversation_text = ""
+            timeout = asyncio.get_event_loop().time() + 5  # 5 second timeout
+
+            while asyncio.get_event_loop().time() < timeout:
+                try:
+                    message = await asyncio.wait_for(self.openai_ws.recv(), timeout=1.0)
+                    data = json.loads(message)
+
+                    if data.get("type") == "conversation.list":
+                        # Extract all messages from the conversation
+                        items = data.get("items", [])
+                        for item in items:
+                            if item.get("type") == "message":
+                                role = item.get("role", "")
+                                content = item.get("content", [])
+                                for c in content:
+                                    if c.get("type") == "input_text":
+                                        text = c.get("text", "")
+                                        conversation_text += f"{role}: {text}\n"
+                                    elif c.get("type") == "text":
+                                        text = c.get("text", "")
+                                        conversation_text += f"{role}: {text}\n"
+                                    elif c.get("type") == "audio":
+                                        transcript = c.get("transcript", "")
+                                        if transcript:
+                                            conversation_text += f"{role}: {transcript}\n"
+                        break
+                except asyncio.TimeoutError:
+                    continue
+
+            print(f"=== CONVERSATION TEXT:\n{conversation_text[:500]}... ===", flush=True)
+
+            # Use OpenAI to extract structured lead data from the conversation
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.openai_api_key)
+
+            extraction_prompt = f"""Extract the following lead information from this conversation transcript:
+- full_name (first and last name)
+- zip_code (5 digits only)
+- phone (phone number)
+- vehicle_year (4 digit year)
+- vehicle_make (brand/manufacturer)
+- vehicle_model (model name)
+
+Conversation:
+{conversation_text}
+
+Return ONLY valid JSON with these exact keys. If any field is missing or unclear, omit it from the JSON."""
+
+            response = client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are a data extraction assistant. Extract lead information and return ONLY valid JSON."},
+                    {"role": "user", "content": extraction_prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0
+            )
+
+            lead_data = json.loads(response.choices[0].message.content or "{}")
+            print(f"=== EXTRACTED LEAD DATA: {lead_data} ===", flush=True)
+            logger.info(f"Extracted lead data: {lead_data}")
+
+            # Check if we have all required fields
+            from .models import missing_fields
+            missing = missing_fields(lead_data)
+
+            if missing:
+                logger.warning(f"Missing required fields: {missing}")
+                print(f"=== MISSING FIELDS: {missing} ===", flush=True)
+                # Still try to submit with whatever we have, will save to failed_leads if needed
+
+            # Apply business rules validation
+            from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type
+            rejection_reason = None
+
+            # Rule 1: Validate ZIP code (Alaska/Hawaii)
+            zip_code = lead_data.get("zip_code", "")
+            if zip_code:
+                is_valid_zip, zip_error = validate_zip_code(zip_code)
+                if not is_valid_zip:
+                    rejection_reason = zip_error
+                    print(f"=== ZIP CODE REJECTED: {zip_error} ===", flush=True)
+                    logger.info(f"ZIP code rejected: {zip_error}")
+
+            # Rule 2: Validate vehicle eligibility (if ZIP is valid)
+            if not rejection_reason:
+                vehicle_year = lead_data.get("vehicle_year")
+                vehicle_make = lead_data.get("vehicle_make", "")
+                vehicle_model = lead_data.get("vehicle_model", "")
+
+                if vehicle_year and vehicle_make and vehicle_model:
+                    # Convert year to int
+                    try:
+                        year_int = int(str(vehicle_year))
+                    except (ValueError, TypeError):
+                        year_int = 0
+
+                    # Infer vehicle type from make/model
+                    vehicle_type = categorize_vehicle_type(vehicle_make, vehicle_model)
+                    print(f"=== CATEGORIZED VEHICLE TYPE: {vehicle_type} ===", flush=True)
+
+                    # Validate vehicle eligibility
+                    is_eligible, vehicle_error = validate_vehicle_eligibility(
+                        year_int, vehicle_make, vehicle_model, vehicle_type
+                    )
+
+                    if not is_eligible:
+                        rejection_reason = vehicle_error
+                        print(f"=== VEHICLE REJECTED: {vehicle_error} ===", flush=True)
+                        logger.info(f"Vehicle rejected: {vehicle_error}")
+
+            # If rejected, mark session as closed without submitting to NPA
+            if rejection_reason:
+                print(f"=== LEAD REJECTED: {rejection_reason} ===", flush=True)
+                logger.info(f"Lead rejected for call {self.call_sid}: {rejection_reason}")
+
+                # Save to rejected_leads table for analytics
+                from .models import RejectedLead
+                from .validation_rules import categorize_rejection
+
+                rejection_category = categorize_rejection(rejection_reason)
+                rejected_lead = RejectedLead(
+                    lead_data=lead_data,
+                    rejection_reason=rejection_reason,
+                    rejection_category=rejection_category,
+                    channel="voice",
+                    session_id=self.session.id if self.session else None
+                )
+                self.db.add(rejected_lead)
+
+                # Mark session as closed without submitting
+                if self.session:
+                    self.session.status = "closed"
+                    lead_data["_rejected"] = True
+                    lead_data["_rejection_reason"] = rejection_reason
+                    self.session.state = lead_data
+                    flag_modified(self.session, "state")
+
+                self.db.commit()
+                print(f"=== REJECTED LEAD SAVED TO DATABASE (Category: {rejection_category}) ===", flush=True)
+
+                return  # Don't submit to NPA
+
+            # Add channel info
+            lead_data["_channel"] = "voice"
+
+            # Submit to NPA API with failed/succeeded tracking
+            try:
+                npa_response = await create_lead(lead_data)
+
+                # Mark session as closed
+                if self.session:
+                    self.session.status = "closed"
+                    self.session.state = lead_data
+                    flag_modified(self.session, "state")
+                    self.db.commit()
+
+                # Save to succeeded_leads table
+                from .models import SucceededLead
+                succeeded_lead = SucceededLead(
+                    lead_data=lead_data,
+                    channel="voice",
+                    session_id=self.session.id if self.session else None,
+                    npa_response=npa_response if isinstance(npa_response, dict) else None
+                )
+                self.db.add(succeeded_lead)
+                self.db.commit()
+
+                print("=== LEAD SUBMITTED SUCCESSFULLY ===", flush=True)
+                logger.info(f"Lead submitted successfully for call {self.call_sid}")
+
+            except Exception as e:
+                logger.error(f"Failed to submit lead: {e}")
+                print(f"=== LEAD SUBMISSION FAILED: {e} ===", flush=True)
+
+                # Save to failed_leads table
+                from .models import FailedLead
+                failed_lead = FailedLead(
+                    lead_data=lead_data,
+                    error_message=str(e),
+                    channel="voice",
+                    session_id=self.session.id if self.session else None
+                )
+                self.db.add(failed_lead)
+
+                # Mark session as closed anyway
+                if self.session:
+                    self.session.status = "closed"
+                    self.session.state = lead_data
+                    flag_modified(self.session, "state")
+
+                self.db.commit()
+                logger.info(f"Lead saved to failed_leads table for retry")
+
+        except Exception as e:
+            logger.error(f"Error extracting and submitting lead: {e}", exc_info=True)
+            print(f"=== ERROR IN LEAD EXTRACTION: {e} ===", flush=True)
 
     async def cleanup(self):
         """Clean up connections"""
