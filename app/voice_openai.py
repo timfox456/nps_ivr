@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # OpenAI Realtime API configuration
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
-OPENAI_MODEL = "gpt-4o-realtime-preview-2024-10-01"
+OPENAI_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 
 # System instructions for the AI assistant
 SYSTEM_INSTRUCTIONS = """You are a friendly AI assistant for PowerSportBuyers.com, where we make selling your powersport vehicle stress free.
@@ -205,7 +205,7 @@ If they say no, ask them for the correct phone number."""
             "session": {
                 "modalities": ["text", "audio"],
                 "instructions": instructions,
-                "voice": "alloy",  # Can be: alloy, echo, fable, onyx, nova, shimmer
+                "voice": "alloy",  # Neutral and balanced (alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar)
                 "input_audio_format": "g711_ulaw",  # Twilio uses µ-law
                 "output_audio_format": "g711_ulaw",
                 "input_audio_transcription": {
@@ -358,7 +358,7 @@ If they say no, ask for the correct number and confirm it digit by digit."""
                                     text = c.get("transcript", "")
 
                                 # Look for the goodbye message to detect call completion
-                                if text and ("Have a great day, goodbye" in text or "have a great day, goodbye" in text.lower()):
+                                if text and not self.goodbye_detected and ("Have a great day, goodbye" in text or "have a great day, goodbye" in text.lower()):
                                     print("=== GOODBYE MESSAGE DETECTED - CALL COMPLETE ===", flush=True)
                                     logger.info("Goodbye message detected - extracting lead data and submitting")
 
@@ -504,7 +504,7 @@ Return ONLY valid JSON with these exact keys. If any field is missing or unclear
                 # Still try to submit with whatever we have, will save to failed_leads if needed
 
             # Apply business rules validation
-            from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type
+            from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type, validate_make_model_match
             rejection_reason = None
 
             # Rule 1: Validate ZIP code (Alaska/Hawaii)
@@ -514,9 +514,19 @@ Return ONLY valid JSON with these exact keys. If any field is missing or unclear
                 if not is_valid_zip:
                     rejection_reason = zip_error
                     print(f"=== ZIP CODE REJECTED: {zip_error} ===", flush=True)
-                    logger.info(f"ZIP code rejected: {zip_error}")
 
-            # Rule 2: Validate vehicle eligibility (if ZIP is valid)
+            # Rule 2: Validate make/model match
+            if not rejection_reason:
+                vehicle_make = lead_data.get("vehicle_make", "")
+                vehicle_model = lead_data.get("vehicle_model", "")
+
+                if vehicle_make and vehicle_model:
+                    is_match, match_error = validate_make_model_match(vehicle_make, vehicle_model)
+                    if not is_match:
+                        rejection_reason = match_error
+                        print(f"=== MAKE/MODEL MISMATCH REJECTED: {match_error} ===", flush=True)
+
+            # Rule 3: Validate vehicle eligibility (if previous rules passed)
             if not rejection_reason:
                 vehicle_year = lead_data.get("vehicle_year")
                 vehicle_make = lead_data.get("vehicle_make", "")

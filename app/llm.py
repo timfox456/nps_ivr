@@ -1,11 +1,15 @@
 import json
 import re
+import time
+import logging
 from typing import Dict, Any, Tuple
 from openai import OpenAI
 from .config import settings
 from .models import missing_fields, FIELD_PRETTY
 from .validation import validate_and_normalize_field, normalize_transcribed_email
-from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type
+from .validation_rules import validate_zip_code, validate_vehicle_eligibility, categorize_vehicle_type, validate_make_model_match
+
+logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
 
@@ -82,6 +86,9 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "Recognize both modern NATO (Alpha, Bravo, Charlie) and historical variants (Able, Baker, Charlie, Dog, Easy, Fox, George, How, Item, Jig, King, Love, Mike, Nan, Oboe, Peter, Queen, Roger, Sugar, Tare, Uncle, Victor, William, X-ray, Yoke, Zebra). "
         "Extract the email exactly as transcribed - validation will be handled separately. "
         "IMPORTANT: For PHONE numbers, extract all digits. Accept formats like (555) 123-4567, 555-123-4567, or 5551234567. "
+        "IMPORTANT: For VEHICLE information, when user provides both make and model together (like 'Dodge Ram', '2020 Yamaha Grizzly', 'Honda CBR600'), extract BOTH fields: "
+        "Examples: 'Dodge Ram' -> vehicle_make: 'Dodge', vehicle_model: 'Ram' | '2020 Yamaha Grizzly' -> vehicle_year: '2020', vehicle_make: 'Yamaha', vehicle_model: 'Grizzly' | "
+        "'Honda CBR600' -> vehicle_make: 'Honda', vehicle_model: 'CBR600'. "
         "IMPORTANT: For VEHICLE MAKE/MODEL from voice input, auto-correct common speech recognition errors to proper powersports brands: "
         "Common corrections: 'Omaha'/'Obama'/'Yo mama' -> 'Yamaha', 'Hunda'/'Honda' -> 'Honda', 'Kawasucky'/'Cow a soccer' -> 'Kawasaki', "
         "'Suzuki'/'Sue zooky' -> 'Suzuki', 'Harley'/'Hardly' -> 'Harley-Davidson', 'Ducati'/'Do cotty' -> 'Ducati', "
@@ -104,6 +111,9 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "required_fields": list(FIELD_PRETTY.keys()),
     }
     try:
+        start_time = time.time()
+        logger.info(f"Starting OpenAI API call for SMS (model: {settings.openai_model})")
+
         resp = client().chat.completions.create(
             model=settings.openai_model,
             messages=[
@@ -113,9 +123,15 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
             temperature=0.2,  # Reduced from 0.7 for more consistent, predictable behavior
             response_format={"type": "json_object"},
         )
+
+        api_time = time.time() - start_time
+        logger.info(f"OpenAI API call completed in {api_time:.2f}s")
+
         text = resp.choices[0].message.content or "{}"
         data = json.loads(text)
-    except Exception:
+    except Exception as e:
+        api_time = time.time() - start_time
+        logger.error(f"OpenAI API call failed after {api_time:.2f}s: {e}")
         data = {}
 
     extracted = {k: data.get(k) for k in FIELD_PRETTY.keys() if data.get(k)}
@@ -175,7 +191,17 @@ def process_turn(user_text: str, state: Dict[str, Any], last_asked_field: str = 
                 if not is_valid_zip:
                     rejection_reason = zip_error
 
-            # Rule 2: Validate vehicle eligibility (if ZIP is valid)
+            # Rule 2: Validate make/model match (if ZIP is valid)
+            if not rejection_reason:
+                vehicle_make = new_state.get("vehicle_make", "")
+                vehicle_model = new_state.get("vehicle_model", "")
+
+                if vehicle_make and vehicle_model:
+                    is_match, match_error = validate_make_model_match(vehicle_make, vehicle_model)
+                    if not is_match:
+                        rejection_reason = match_error
+
+            # Rule 3: Validate vehicle eligibility (if previous rules passed)
             if not rejection_reason:
                 vehicle_year = new_state.get("vehicle_year")
                 vehicle_make = new_state.get("vehicle_make", "")

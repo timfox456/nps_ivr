@@ -6,12 +6,30 @@ All rules are deterministic and testable.
 """
 from typing import Tuple, Optional
 
+# Known model patterns for major powersport brands
+# This helps catch obvious make/model mismatches like "Harley RC51" (RC51 is Honda)
+BRAND_MODEL_PATTERNS = {
+    "honda": ["cbr", "crf", "cb", "shadow", "rebel", "goldwing", "africa twin", "rancher", "foreman", "rubicon", "pioneer", "talon", "rc51", "vtr"],
+    "yamaha": ["yzf", "r1", "r6", "r7", "mt", "fz", "v-star", "bolt", "tenere", "wr", "yz", "grizzly", "raptor", "kodiak", "wolverine", "viking"],
+    "kawasaki": ["ninja", "z", "zx", "vulcan", "versys", "klr", "kx", "brute force", "mule", "teryx", "ridge"],
+    "suzuki": ["gsxr", "gsx", "hayabusa", "v-strom", "boulevard", "sv", "rm", "dr", "kingquad", "ozark"],
+    "harley": ["street", "sportster", "iron", "forty-eight", "softail", "fat boy", "heritage", "deluxe", "road", "glide", "king", "electra", "ultra", "low rider", "dyna", "breakout"],
+    "harley-davidson": ["street", "sportster", "iron", "forty-eight", "softail", "fat boy", "heritage", "deluxe", "road", "glide", "king", "electra", "ultra", "low rider", "dyna", "breakout"],
+    "ducati": ["panigale", "monster", "multistrada", "streetfighter", "diavel", "scrambler", "supersport", "hypermotard"],
+    "ktm": ["duke", "rc", "adventure", "smc", "sx", "exc", "xc"],
+    "bmw": ["gs", "r1250", "r1200", "s1000", "f850", "f750", "k1600"],
+    "triumph": ["bonneville", "street triple", "speed triple", "tiger", "rocket", "thruxton", "scrambler"],
+    "polaris": ["ranger", "rzr", "sportsman", "scrambler", "slingshot", "general"],
+    "can-am": ["maverick", "defender", "outlander", "renegade", "commander", "spyder"],
+    "arctic cat": ["wildcat", "prowler", "alterra", "zr"],
+}
+
 
 def categorize_rejection(rejection_message: str) -> str:
     """
     Categorize the rejection reason into a category for analytics.
 
-    Returns one of: zip_code, vehicle_age, electric, slingshot, unknown
+    Returns one of: zip_code, vehicle_age, electric, slingshot, make_model_mismatch, unknown
     """
     msg_lower = rejection_message.lower()
 
@@ -21,6 +39,8 @@ def categorize_rejection(rejection_message: str) -> str:
         return "electric"
     elif "slingshot" in msg_lower or "not interested" in msg_lower:
         return "slingshot"
+    elif "make and model don't match" in msg_lower or "mismatch" in msg_lower:
+        return "make_model_mismatch"
     elif "cruiser" in msg_lower or "metric" in msg_lower or "side-by-side" in msg_lower or \
          "atv" in msg_lower or "dirt bike" in msg_lower or "scooter" in msg_lower:
         return "vehicle_age"
@@ -181,3 +201,55 @@ def categorize_vehicle_type(make: str, model: str) -> str:
         return 'sport_bike'
 
     return 'unknown'
+
+
+def validate_make_model_match(make: str, model: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that the vehicle make and model are a plausible match.
+
+    This catches obvious errors like "Harley RC51" (RC51 is a Honda model).
+
+    Args:
+        make: Vehicle make/brand
+        model: Vehicle model
+
+    Returns:
+        (is_valid, error_message)
+        - is_valid: True if match is plausible, False if obvious mismatch
+        - error_message: None if valid, rejection reason if mismatch detected
+    """
+    if not make or not model:
+        return True, None  # Can't validate if either is missing
+
+    make_lower = make.lower().strip()
+    model_lower = model.lower().strip()
+
+    # Normalize common make variations
+    if "harley" in make_lower:
+        make_lower = "harley-davidson"
+    elif "can am" in make_lower or "canam" in make_lower:
+        make_lower = "can-am"
+
+    # Check if this make is in our known brands
+    if make_lower not in BRAND_MODEL_PATTERNS:
+        # Unknown make - we can't validate, so pass it through
+        return True, None
+
+    # Get known model patterns for this make
+    known_patterns = BRAND_MODEL_PATTERNS[make_lower]
+
+    # Check if the model matches any known pattern for this make
+    model_matches = any(pattern in model_lower for pattern in known_patterns)
+
+    if not model_matches:
+        # Model doesn't match this make - check if it matches a different make
+        for other_make, other_patterns in BRAND_MODEL_PATTERNS.items():
+            if other_make == make_lower:
+                continue
+
+            if any(pattern in model_lower for pattern in other_patterns):
+                # Found the model under a different make
+                return False, f"The {model} model doesn't match the {make} brand. Please verify your vehicle information."
+
+    # Either matches this make, or we couldn't find it anywhere (unknown model - pass through)
+    return True, None

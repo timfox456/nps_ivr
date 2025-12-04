@@ -159,9 +159,22 @@ async def twilio_sms(request: Request):
     try:
         session = get_or_create_session(db, "sms", session_key, from_number, to_number)
 
+        # Check how recently the session was updated (to prevent duplicate welcomes in quick succession)
+        from datetime import datetime, timedelta
+        time_since_update = datetime.utcnow() - session.updated_at if session.updated_at else timedelta(seconds=999)
+        welcome_recently_sent = time_since_update.total_seconds() < 30  # 30 second threshold (typical response takes ~10s)
+
         # Check for reset keywords
         reset_keywords = ["hi", "hello", "restart", "reset", "start over", "start again", "begin"]
-        if any(keyword in body.lower() for keyword in reset_keywords):
+        should_reset = session.last_prompt_field and any(keyword in body.lower() for keyword in reset_keywords)
+
+        # If session is already closed and they're trying to restart, send acknowledgment
+        if should_reset and session.status == "closed":
+            resp = MessagingResponse()
+            resp.message("Thank you! We already have all your information and an agent will reach out to you within the next 24 hours.")
+            return PlainTextResponse(str(resp), media_type="application/xml")
+
+        if should_reset and not welcome_recently_sent:
             # Reset the session state
             session.state = {}
             session.last_prompt_field = "full_name"
@@ -187,8 +200,8 @@ async def twilio_sms(request: Request):
             if caller_phone:
                 current_state["phone"] = caller_phone
 
-        # Send welcome message for first interaction
-        if is_first_message:
+        # Send welcome message for first interaction (with duplicate prevention)
+        if is_first_message and not welcome_recently_sent:
             resp = MessagingResponse()
             resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
             session.state = current_state
