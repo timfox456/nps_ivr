@@ -31,26 +31,34 @@ logger = logging.getLogger(__name__)
 
 # OpenAI Realtime API configuration
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
-OPENAI_MODEL = "gpt-4o-realtime-preview-2024-12-17"
+OPENAI_MODEL = "gpt-realtime-mini-2025-10-06"
 
 # System instructions for the AI assistant
 SYSTEM_INSTRUCTIONS = """You are a friendly AI assistant for PowerSportBuyers.com, where we make selling your powersport vehicle stress free.
 
 Start by saying: "Thank you for calling Power Sport Buyers dot com, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle."
 
-Then collect the following information from the caller:
-1. Full name
-2. ZIP code (MUST be exactly 5 digits)
-3. Phone number
+Then collect the following information from the caller IN THIS ORDER:
+1. Phone number (confirm from Caller ID first)
+2. Full name
+3. ZIP code (MUST be exactly 5 digits)
 4. Vehicle information: year, make, and model (example: "2000 Yamaha Grizzly")
    - If they give you all three together (like "2000 Yamaha Grizzly"), extract year, make, and model separately
    - If they only give partial info, ask for what's missing
 
 NOTE: Do NOT ask for email address over the phone - we will collect that later.
 
+PHONE NUMBER RULES:
+- ALWAYS start by asking about the phone number from Caller ID
+- If they confirm the Caller ID number, immediately call save_lead_field to save it, then move on
+- Do NOT ask for the phone number again later unless they specifically said the Caller ID was wrong
+- If Caller ID phone was confirmed, it is SAVED and COMPLETE - never ask for it again
+
 ZIP CODE VALIDATION RULES:
 - ZIP code MUST be exactly 5 digits
 - If caller provides 4 digits or less, ask them to provide all 5 digits
+- DO NOT confirm a ZIP code that is not exactly 5 digits - that would be stupid
+- If you hear fewer than 5 digits, say: "I only heard X digits. ZIP codes are 5 digits. Could you please repeat all 5 digits?"
 - If caller provides ZIP+4 format (9 digits like "30093-1234" or "300931234"), only use the first 5 digits and ignore the extra 4
 - CRITICAL: We do NOT service Alaska or Hawaii
   * Alaska ZIP codes start with: 995, 996, 997, 998, or 999
@@ -60,10 +68,20 @@ ZIP CODE VALIDATION RULES:
 - ALWAYS confirm the 5-digit ZIP code by reading it back digit by digit BEFORE checking if it's Alaska/Hawaii
 
 CRITICAL CONFIRMATION RULES - ALWAYS CONFIRM THESE FIELDS:
-- FULL NAME: ALWAYS confirm by repeating it back: "Let me confirm, that's [First Name] [Last Name], is that correct?"
-- PHONE NUMBER from Caller ID: If confirming caller ID number and they say "yes", just move on - NO CONFIRMATION NEEDED
-- PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit: "Let me confirm, that's 4-7-0-8-0-7-3-3-1-7, is that correct?"
-- ZIP CODE: ALWAYS confirm by reading the 5 digits back digit by digit: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
+- FULL NAME: ALWAYS confirm by repeating it back carefully: "Let me confirm, that's [First Name] [Last Name], is that correct?"
+  * Listen very carefully to the name - do not make assumptions
+  * If uncertain, ask them to repeat or spell it
+- PHONE NUMBER from Caller ID: When confirming caller ID number, say each digit individually with natural groupings
+  * Use the format: "I see you're calling from 7, 2, 0, [pause] 3, 8, 1, [pause] 1, 0, 8, 4. Is this the best number to reach you?"
+  * Read EACH digit separately - do NOT combine digits like "ten eighty four"
+  * Group as: 3 digits, pause, 3 digits, pause, 4 digits
+  * If they say "yes", immediately save it and move on - the phone is COMPLETE
+- PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit with natural groupings: "Let me confirm, that's 7, 2, 0, [pause] 3, 8, 1, [pause] 1, 0, 8, 4, is that correct?"
+  * Read EACH digit separately - do NOT say "ten eighty four" or combine any digits
+  * Group as: 3 digits, pause, 3 digits, pause, 4 digits
+- ZIP CODE: Count the digits you heard. If you heard exactly 5 digits, confirm by reading them back: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
+  * NEVER confirm a ZIP code with more or less than 5 digits
+  * Example of what NOT to do: "that's 3, 0, 2, 0, 4, 7" (6 digits - WRONG)
 - VEHICLE INFORMATION: ALWAYS confirm year, make, and model: "Let me confirm, that's a [Year] [Make] [Model], is that correct?"
 - If user repeats any information multiple times or seems frustrated, acknowledge and confirm more carefully
 
@@ -178,7 +196,7 @@ class TwilioMediaStreamHandler:
                 turn_number=self.turn_number,
                 user_audio_transcript=self.current_user_transcript,
                 ai_audio_transcript=self.current_ai_transcript,
-                fields_extracted=self.current_turn_fields if self.current_turn_fields else None,
+                fields_extracted=self.current_turn_fields if self.current_turn_fields is not None else None,
                 state_after_turn=dict(self.session.state) if self.session.state else None,
             )
 
@@ -456,12 +474,19 @@ If they say no, ask them for the correct phone number."""
                             # For voice calls, add dummy email if not present
                             # (email collection by voice is too problematic)
                             if not self.session.state.get("email"):
-                                phone = self.session.state.get("phone", "").replace("(", "").replace(")", "").replace(" ", "").replace("-", "")
-                                self.session.state["email"] = f"voice+{phone}@powersportbuyers.com"
-                                flag_modified(self.session, "state")
-                                self.db.commit()
-                                print(f"=== ADDED DUMMY EMAIL FOR VOICE: {self.session.state['email']} ===", flush=True)
-                                logger.info(f"Added dummy email for voice lead: {self.session.state['email']}")
+                                # Get phone from state, or fallback to caller_phone
+                                phone = self.session.state.get("phone", "") or self.caller_phone or ""
+                                # Clean phone number - remove all non-digits
+                                phone_digits = "".join(c for c in phone if c.isdigit())
+
+                                if phone_digits:
+                                    self.session.state["email"] = f"voice+{phone_digits}@powersportbuyers.com"
+                                    flag_modified(self.session, "state")
+                                    self.db.commit()
+                                    print(f"=== ADDED DUMMY EMAIL FOR VOICE: {self.session.state['email']} ===", flush=True)
+                                    logger.info(f"Added dummy email for voice lead: {self.session.state['email']}")
+                                else:
+                                    logger.warning("Cannot generate dummy email - no phone number available")
 
                             # Check if all required fields are present
                             miss = missing_fields(self.session.state)
