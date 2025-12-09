@@ -6,7 +6,6 @@ class Base(DeclarativeBase):
     pass
 
 # Determine which database to use based on configuration
-# When USE_POSTGRES=true, will use PostgreSQL; otherwise uses SQLite
 def get_database_url():
     if settings.use_postgres and settings.postgres_url:
         return settings.postgres_url
