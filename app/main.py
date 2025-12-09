@@ -168,11 +168,18 @@ async def twilio_sms(request: Request):
         reset_keywords = ["hi", "hello", "restart", "reset", "start over", "start again", "begin"]
         should_reset = session.last_prompt_field and any(keyword in body.lower() for keyword in reset_keywords)
 
-        # If session is already closed and they're trying to restart, send acknowledgment
+        # If session is recently closed (within last 2 minutes) and they're trying to restart, send acknowledgment
+        # For old closed sessions, allow restart
         if should_reset and session.status == "closed":
-            resp = MessagingResponse()
-            resp.message("Thank you! We already have all your information and an agent will reach out to you within the next 24 hours.")
-            return PlainTextResponse(str(resp), media_type="application/xml")
+            # Check if session was closed recently (within last 2 minutes)
+            minutes_since_closed = (datetime.utcnow() - session.updated_at).total_seconds() / 60 if session.updated_at else 999
+            if minutes_since_closed < 2.0:  # Less than 2 minutes ago
+                resp = MessagingResponse()
+                resp.message("Thank you! We already have all your information and an agent will reach out to you within the next 24 hours.")
+                return PlainTextResponse(str(resp), media_type="application/xml")
+            else:
+                # Old session - allow restart by falling through to reset logic below
+                pass
 
         if should_reset and not welcome_recently_sent:
             # Reset the session state
@@ -224,6 +231,33 @@ async def twilio_sms(request: Request):
 
         session.state = new_state
         flag_modified(session, "state")
+
+        # AUDIT LOGGING: Log this conversation turn to database
+        from .models import ConversationTurn
+        try:
+            # Calculate which fields were extracted this turn
+            fields_extracted = {}
+            for key, value in new_state.items():
+                if key not in current_state and not key.startswith("_"):
+                    fields_extracted[key] = value
+
+            # Get current turn number for this session
+            turn_count = db.query(ConversationTurn).filter(
+                ConversationTurn.session_id == session.id
+            ).count()
+
+            turn = ConversationTurn(
+                session_id=session.id,
+                channel="sms",
+                turn_number=turn_count + 1,
+                user_message=body,
+                ai_response=next_q,
+                fields_extracted=fields_extracted if fields_extracted else None,
+                state_after_turn=dict(new_state) if new_state else None,
+            )
+            db.add(turn)
+        except Exception as e:
+            logger.error(f"Error logging SMS conversation turn: {e}", exc_info=True)
 
         # Send lead when done
         if done and session.status != "closed":

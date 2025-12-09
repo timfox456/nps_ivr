@@ -144,7 +144,7 @@ def validate_vehicle_eligibility(
         return False, f"We don't currently purchase ATVs from {year} and older."
 
     # Rule 7: Dirt bike / MX - 2015 and older
-    dirt_bike_keywords = ['crf', 'yz', 'kx', 'rm', 'sx', 'exc', 'xc', 'mx']
+    dirt_bike_keywords = ['crf', 'cr', 'yz', 'kx', 'rm', 'sx', 'exc', 'xc', 'mx', 'drz', 'wr', 'klx']
     is_dirt_bike = any(keyword in model_lower for keyword in dirt_bike_keywords)
     is_dirt_type = vehicle_type_lower in ['dirt_bike', 'mx', 'motocross', 'dirtbike', 'enduro']
 
@@ -180,7 +180,7 @@ def categorize_vehicle_type(make: str, model: str) -> str:
     if any(k in model_lower for k in ['grizzly', 'rancher', 'sportsman', 'outlander', 'kodiak', 'foreman']):
         return 'atv'
 
-    if any(k in model_lower for k in ['crf', 'yz', 'kx', 'rm', 'sx', 'exc']):
+    if any(k in model_lower for k in ['crf', 'cr', 'yz', 'kx', 'rm', 'sx', 'exc', 'drz', 'wr', 'klx']):
         return 'dirt_bike'
 
     if any(k in model_lower for k in ['metropolitan', 'zuma', 'ruckus']):

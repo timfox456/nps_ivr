@@ -18,8 +18,12 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
-    # Database
+    # Database - SQLite (primary for now)
     database_url: str = "sqlite:///./nps_ivr.db"
+
+    # PostgreSQL (for migration/testing) - will eventually replace SQLite
+    postgres_url: Optional[str] = None  # Format: postgresql://user:password@localhost/dbname
+    use_postgres: bool = False  # Set to True to switch to PostgreSQL
 
     # NPA API (formerly Salesforce placeholder)
     npa_api_base_url: str = "https://npadsapi.dev.npauctions.com"

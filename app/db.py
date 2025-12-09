@@ -5,13 +5,28 @@ from .config import settings
 class Base(DeclarativeBase):
     pass
 
-# For a file-based SQLite DB; works in multi-threaded FastAPI
+# Determine which database to use based on configuration
+# When USE_POSTGRES=true, will use PostgreSQL; otherwise uses SQLite
+def get_database_url():
+    if settings.use_postgres and settings.postgres_url:
+        return settings.postgres_url
+    return settings.database_url
+
+db_url = get_database_url()
+
+# Create engine with appropriate connection args
 engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
+    db_url,
+    connect_args={"check_same_thread": False} if db_url.startswith("sqlite") else {},
+    pool_pre_ping=True,  # Verify connections before using them
 )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+# Log which database is being used
+import logging
+logger = logging.getLogger(__name__)
+logger.info(f"Using database: {'PostgreSQL' if settings.use_postgres else 'SQLite'} - {db_url}")
 
 def init_db():
     from . import models  # ensure models are imported

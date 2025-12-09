@@ -48,6 +48,32 @@ class SucceededLead(Base):
     npa_response: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # Response from NPA API if available
 
 
+class ConversationTurn(Base):
+    """Audit log for every conversation turn (user message + AI response)"""
+    __tablename__ = "conversation_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    session_id: Mapped[int] = mapped_column(Integer, index=True)  # Link to conversation_sessions.id
+    channel: Mapped[str] = mapped_column(String(16), index=True)  # 'sms' | 'voice'
+
+    # Turn data
+    turn_number: Mapped[int] = mapped_column(Integer)  # Sequential turn number in conversation
+    user_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # What user said/typed
+    ai_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # What AI responded
+
+    # Voice-specific fields
+    user_audio_transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Transcription from OpenAI
+    ai_audio_transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # What AI said in voice
+
+    # Metadata
+    fields_extracted: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # Fields extracted this turn
+    state_after_turn: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # Complete state after this turn
+
+    # Timing
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # How long the turn took
+
+
 class RejectedLead(Base):
     __tablename__ = "rejected_leads"
 
