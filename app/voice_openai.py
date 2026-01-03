@@ -26,8 +26,10 @@ from .db import SessionLocal
 from .models import ConversationSession, missing_fields
 from .llm import process_turn
 from .salesforce import create_lead
+from .logging_config import get_transaction_logger, LogContext
 
 logger = logging.getLogger(__name__)
+transaction_logger = get_transaction_logger()
 
 # OpenAI Realtime API configuration
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
@@ -54,34 +56,33 @@ PHONE NUMBER RULES:
 - Do NOT ask for the phone number again later unless they specifically said the Caller ID was wrong
 - If Caller ID phone was confirmed, it is SAVED and COMPLETE - never ask for it again
 
-ZIP CODE VALIDATION RULES:
-- ZIP code MUST be exactly 5 digits
-- If caller provides 4 digits or less, ask them to provide all 5 digits
-- DO NOT confirm a ZIP code that is not exactly 5 digits - that would be stupid
-- If you hear fewer than 5 digits, say: "I only heard X digits. ZIP codes are 5 digits. Could you please repeat all 5 digits?"
-- If caller provides ZIP+4 format (9 digits like "30093-1234" or "300931234"), only use the first 5 digits and ignore the extra 4
-- CRITICAL: We do NOT service Alaska or Hawaii
-  * Alaska ZIP codes start with: 995, 996, 997, 998, or 999
-  * Hawaii ZIP codes start with: 967 or 968
-  * If caller provides an Alaska or Hawaii ZIP code, politely say: "I'm sorry, we don't currently service [Alaska/Hawaii]. We only service the continental United States at this time."
-  * DO NOT accept Alaska or Hawaii ZIP codes
-- ALWAYS confirm the 5-digit ZIP code by reading it back digit by digit BEFORE checking if it's Alaska/Hawaii
+ZIP CODE COLLECTION RULES:
+- Ask the user for their ZIP code
+- When they provide it, repeat it back to them digit by digit to confirm
+- Then call save_lead_field with the ZIP code they confirmed
+- The system will automatically:
+  * Extract only the digits (ignoring dashes, spaces)
+  * Validate it's exactly 5 digits
+  * Check if it's Alaska or Hawaii (which we don't service)
+- If save_lead_field returns an error, the system will tell you what's wrong (e.g., "not enough digits" or "Alaska not serviced")
+- Relay that error to the user conversationally and ask them to provide a valid ZIP code
 
 CRITICAL CONFIRMATION RULES - ALWAYS CONFIRM THESE FIELDS:
 - FULL NAME: ALWAYS confirm by repeating it back carefully: "Let me confirm, that's [First Name] [Last Name], is that correct?"
   * Listen very carefully to the name - do not make assumptions
   * If uncertain, ask them to repeat or spell it
-- PHONE NUMBER from Caller ID: When confirming caller ID number, say each digit individually with natural groupings
-  * Use the format: "I see you're calling from 7, 2, 0, [pause] 3, 8, 1, [pause] 1, 0, 8, 4. Is this the best number to reach you?"
-  * Read EACH digit separately - do NOT combine digits like "ten eighty four"
-  * Group as: 3 digits, pause, 3 digits, pause, 4 digits
+- PHONE NUMBER from Caller ID: When confirming caller ID number, say each digit individually with brief natural pauses between groups
+  * Example: "I see you're calling from 7, 2, 0... 3, 8, 1... 1, 0, 8, 4. Is this the best number to reach you?"
+  * Read EACH digit separately with commas - do NOT combine digits like "ten eighty four"
+  * Group the digits: first 3, then 3, then 4, with a brief pause between groups (DO NOT say the word "pause")
   * If they say "yes", immediately save it and move on - the phone is COMPLETE
-- PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit with natural groupings: "Let me confirm, that's 7, 2, 0, [pause] 3, 8, 1, [pause] 1, 0, 8, 4, is that correct?"
+- PHONE NUMBER spoken by user: ALWAYS confirm by reading back digit by digit with brief natural pauses between groups
+  * Example: "Let me confirm, that's 7, 2, 0... 3, 8, 1... 1, 0, 8, 4, is that correct?"
   * Read EACH digit separately - do NOT say "ten eighty four" or combine any digits
-  * Group as: 3 digits, pause, 3 digits, pause, 4 digits
-- ZIP CODE: Count the digits you heard. If you heard exactly 5 digits, confirm by reading them back: "Let me confirm your ZIP code, that's 3-0-0-9-3, is that correct?"
-  * NEVER confirm a ZIP code with more or less than 5 digits
-  * Example of what NOT to do: "that's 3, 0, 2, 0, 4, 7" (6 digits - WRONG)
+  * DO NOT literally say the word "pause" - just use brief natural pauses between digit groups
+- ZIP CODE: Confirm by reading the digits back: "Let me confirm your ZIP code, that's 9-2-5-9-2, is that correct?"
+  * Don't worry about counting - the system will validate the format
+  * Just repeat what you heard back to the user for confirmation
 - VEHICLE INFORMATION: ALWAYS confirm year, make, and model: "Let me confirm, that's a [Year] [Make] [Model], is that correct?"
 - If user repeats any information multiple times or seems frustrated, acknowledge and confirm more carefully
 
@@ -91,7 +92,28 @@ Be patient and helpful if they need clarification.
 
 When you have collected a piece of information and confirmed it with the user, immediately call the save_lead_field function to save it.
 
-When you have all the information, call submit_lead to finalize the lead, then say EXACTLY: "Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
+IMPORTANT: When you call save_lead_field, check the response:
+- If success=false, the system found a validation error (like invalid ZIP code format or Alaska/Hawaii)
+- Read the error message and ask the user to provide the correct information
+- Do NOT save the field if you get an error - ask the user again
+
+SMS CONSENT - AFTER COLLECTING ALL VEHICLE INFORMATION:
+- After you have saved: phone, full_name, zip_code, vehicle_year, vehicle_make, and vehicle_model
+- Ask: "Are you okay if we text you with what we need to complete your offer?"
+- Listen for their response (yes/no/maybe/unclear)
+- Call save_lead_field with field_name="sms_consent" and field_value="yes" or "no" based on their answer
+  * If they say yes/sure/okay/fine/that's fine/sounds good → use "yes"
+  * If they say no/don't text me/I don't want texts → use "no"
+  * If they don't respond or give an unclear answer → use "no_response"
+
+CRITICAL - GOODBYE MESSAGE AND LEAD SUBMISSION:
+- After save_lead_field for sms_consent succeeds, you MUST do these steps IN ORDER:
+  1. FIRST: Say ONLY the goodbye message: "Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
+  2. SECOND: Call submit_lead
+- DO NOT acknowledge the consent separately (don't say "Thank you for your consent")
+- DO NOT call submit_lead before saying goodbye
+- DO NOT skip the goodbye message or say anything else
+- Just say the complete goodbye message exactly as written, then call submit_lead
 """
 
 # Function tools for OpenAI Realtime API
@@ -105,7 +127,7 @@ FUNCTION_TOOLS = [
             "properties": {
                 "field_name": {
                     "type": "string",
-                    "enum": ["full_name", "zip_code", "phone", "vehicle_year", "vehicle_make", "vehicle_model"],
+                    "enum": ["full_name", "zip_code", "phone", "vehicle_year", "vehicle_make", "vehicle_model", "sms_consent"],
                     "description": "The name of the field being saved"
                 },
                 "field_value": {
@@ -149,11 +171,15 @@ class TwilioMediaStreamHandler:
         self.current_ai_transcript = ""
         self.current_turn_fields = {}
 
+        # Track when to hang up after submit_lead
+        self.should_hangup_after_next_response = False
+
     async def start(self):
         """Start handling the media stream"""
         try:
             print(f"=== HANDLER START: call_sid={self.call_sid} ===", flush=True)
             logger.info(f"Starting media stream handler for call {self.call_sid}")
+            transaction_logger.info(f"Voice call started: {self.call_sid}")
 
             # Connect to OpenAI FIRST (before DB) - this is the slow operation
             print("=== CONNECTING TO OPENAI ===", flush=True)
@@ -173,13 +199,17 @@ class TwilioMediaStreamHandler:
             # Start handling messages from both Twilio and OpenAI
             print("=== STARTING MESSAGE HANDLERS ===", flush=True)
             logger.info("Starting message handlers")
-            await asyncio.gather(
-                self._handle_twilio_messages(),
-                self._handle_openai_messages()
-            )
+
+            # Use LogContext to add session metadata to all logs from here on
+            with LogContext(session_id=self.session.id, twilio_call_sid=self.call_sid, channel="voice", phone=self.caller_phone or "unknown"):
+                await asyncio.gather(
+                    self._handle_twilio_messages(),
+                    self._handle_openai_messages()
+                )
 
         except Exception as e:
-            logger.error(f"Error in media stream handler: {e}", exc_info=True)
+            logger.error(f"Error in media stream handler for call {self.call_sid}: {e}", exc_info=True)
+            transaction_logger.error(f"Voice call error: {self.call_sid} - {str(e)}")
             raise
         finally:
             await self.cleanup()
@@ -225,7 +255,9 @@ class TwilioMediaStreamHandler:
             )
             .first()
         )
+
         if obj:
+            logger.info(f"Retrieved existing voice session {obj.id} for call {self.call_sid}")
             return obj
 
         # Create new session
@@ -241,6 +273,7 @@ class TwilioMediaStreamHandler:
         self.db.commit()
         self.db.refresh(obj)
         print(f"=== CREATED NEW SESSION: {obj.id} with key={self.call_sid} ===", flush=True)
+        logger.info(f"Created new voice session {obj.id} for call {self.call_sid}")
         return obj
 
     async def _connect_to_openai(self):
@@ -281,7 +314,7 @@ If they say no, ask them for the correct phone number."""
                     "type": "server_vad",  # Server-side voice activity detection
                     "threshold": 0.5,
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
+                    "silence_duration_ms": 1500  # Increased from 500ms to 1.5s to allow longer pauses
                 },
                 "tools": FUNCTION_TOOLS,
                 "tool_choice": "auto"
@@ -442,34 +475,74 @@ If they say no, ask them for the correct phone number."""
                             field_value = args.get("field_value")
 
                             if field_name and field_value:
-                                # Update session state
-                                self.session.state[field_name] = field_value
-                                flag_modified(self.session, "state")
-                                self.db.commit()
-                                self.db.refresh(self.session)
+                                # Validate and clean the field value based on field type
+                                validation_error = None
+                                cleaned_value = field_value
 
-                                print(f"=== SAVED FIELD: {field_name}={field_value} ===", flush=True)
-                                logger.info(f"Saved field: {field_name}={field_value}")
+                                if field_name == "zip_code":
+                                    # Extract only digits from zip code
+                                    zip_digits = "".join(c for c in field_value if c.isdigit())
 
-                                # Track field for turn logging
-                                self.current_turn_fields[field_name] = field_value
+                                    # Take first 5 digits if ZIP+4 format
+                                    if len(zip_digits) > 5:
+                                        zip_digits = zip_digits[:5]
 
-                                # Send success response
-                                await self.openai_ws.send(json.dumps({
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "function_call_output",
-                                        "call_id": call_id,
-                                        "output": json.dumps({"success": True, "message": f"Saved {field_name}"})
-                                    }
-                                }))
+                                    # Validate exactly 5 digits
+                                    if len(zip_digits) != 5:
+                                        validation_error = f"Invalid ZIP code: need exactly 5 digits, got {len(zip_digits)}. Ask user to repeat all 5 digits."
+                                        logger.warning(f"ZIP validation failed for '{field_value}': {validation_error}")
+                                    else:
+                                        # Check for Alaska or Hawaii
+                                        if zip_digits.startswith(('995', '996', '997', '998', '999')):
+                                            validation_error = "We do not service Alaska. Ask user if they have a different address in the continental US."
+                                            logger.warning(f"ZIP validation failed: Alaska ZIP code {zip_digits}")
+                                        elif zip_digits.startswith(('967', '968')):
+                                            validation_error = "We do not service Hawaii. Ask user if they have a different address in the continental US."
+                                            logger.warning(f"ZIP validation failed: Hawaii ZIP code {zip_digits}")
+                                        else:
+                                            cleaned_value = zip_digits
+                                            logger.info(f"ZIP code cleaned: '{field_value}' -> '{cleaned_value}'")
+
+                                if validation_error:
+                                    # Return error to AI so it can ask again
+                                    await self.openai_ws.send(json.dumps({
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "function_call_output",
+                                            "call_id": call_id,
+                                            "output": json.dumps({"success": False, "error": validation_error})
+                                        }
+                                    }))
+                                else:
+                                    # Update session state with cleaned value
+                                    self.session.state[field_name] = cleaned_value
+                                    flag_modified(self.session, "state")
+                                    self.db.commit()
+                                    self.db.refresh(self.session)
+
+                                    print(f"=== SAVED FIELD: {field_name}={cleaned_value} ===", flush=True)
+                                    logger.info(f"Saved field: {field_name}={cleaned_value}")
+
+                                    # Track field for turn logging
+                                    self.current_turn_fields[field_name] = cleaned_value
+
+                                    # Send success response
+                                    await self.openai_ws.send(json.dumps({
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "function_call_output",
+                                            "call_id": call_id,
+                                            "output": json.dumps({"success": True, "message": f"Saved {field_name}"})
+                                        }
+                                    }))
                             else:
                                 logger.warning(f"Invalid save_lead_field arguments: {args}")
 
                         elif name == "submit_lead":
                             # Submit the lead
                             print(f"=== SUBMITTING LEAD ===", flush=True)
-                            logger.info("Submitting lead")
+                            logger.info(f"Voice conversation complete - submitting lead for session {self.session.id}")
+                            transaction_logger.info(f"Voice conversation complete - session {self.session.id}")
 
                             # For voice calls, add dummy email if not present
                             # (email collection by voice is too problematic)
@@ -493,7 +566,15 @@ If they say no, ask them for the correct phone number."""
                             if len(miss) == 0:
                                 # Submit the lead
                                 try:
-                                    lead_result = await create_lead(self.session.state)
+                                    logger.info(f"Submitting lead to NPA - session {self.session.id}")
+
+                                    # Prepare lead data for NPA API
+                                    # Remove sms_consent (internal field, not sent to NPA)
+                                    npa_lead_data = dict(self.session.state)
+                                    sms_consent = npa_lead_data.pop("sms_consent", None)
+                                    logger.info(f"SMS consent for session {self.session.id}: {sms_consent}")
+
+                                    lead_result = await create_lead(npa_lead_data)
 
                                     # Mark session as closed
                                     self.session.status = "closed"
@@ -501,7 +582,8 @@ If they say no, ask them for the correct phone number."""
                                     self.db.refresh(self.session)
 
                                     print(f"=== LEAD SUBMITTED: {lead_result} ===", flush=True)
-                                    logger.info(f"Lead submitted: {lead_result}")
+                                    logger.info(f"Lead successfully submitted to NPA - session {self.session.id}")
+                                    transaction_logger.info(f"Lead submitted successfully - session {self.session.id}")
 
                                     # Save to succeeded_leads table
                                     from .models import SucceededLead
@@ -516,7 +598,8 @@ If they say no, ask them for the correct phone number."""
                                     print(f"=== SAVED TO SUCCEEDED_LEADS TABLE ===", flush=True)
 
                                 except Exception as e:
-                                    logger.error(f"Error submitting lead: {e}", exc_info=True)
+                                    logger.error(f"Failed to submit lead for session {self.session.id}: {e}", exc_info=True)
+                                    transaction_logger.error(f"Lead submission failed - session {self.session.id}: {str(e)}")
                                     print(f"=== LEAD SUBMISSION ERROR: {e} ===", flush=True)
 
                                     # Save to failed_leads table
@@ -531,15 +614,23 @@ If they say no, ask them for the correct phone number."""
                                     self.db.commit()
                                     print(f"=== SAVED TO FAILED_LEADS TABLE ===", flush=True)
 
-                                # Send success response
+                                # Send success response with explicit instruction to say goodbye
                                 await self.openai_ws.send(json.dumps({
                                     "type": "conversation.item.create",
                                     "item": {
                                         "type": "function_call_output",
                                         "call_id": call_id,
-                                        "output": json.dumps({"success": True, "message": "Lead submitted successfully"})
+                                        "output": json.dumps({
+                                            "success": True,
+                                            "message": "Lead submitted successfully. NOW SAY THE GOODBYE MESSAGE: Thank you for your information. An agent will reach out to you within the next 24 hours. Have a great day, goodbye!"
+                                        })
                                     }
                                 }))
+
+                                # Set flag to hang up after AI says goodbye
+                                self.should_hangup_after_next_response = True
+                                logger.info("Lead processing complete - will hang up after next AI response")
+
                             else:
                                 logger.warning(f"Cannot submit lead - missing fields: {miss}")
                                 await self.openai_ws.send(json.dumps({
@@ -568,49 +659,36 @@ If they say no, ask them for the correct phone number."""
                     if self.current_user_transcript or self.current_ai_transcript:
                         self._log_conversation_turn()
 
-                    # Check if this response contains the call completion marker
-                    response = data.get("response", {})
-                    output = response.get("output", [])
-                    for item in output:
-                        if item.get("type") == "message":
-                            content = item.get("content", [])
-                            for c in content:
-                                # Check both text and audio transcript fields
-                                text = ""
-                                if c.get("type") == "text":
-                                    text = c.get("text", "")
-                                elif c.get("type") == "audio":
-                                    text = c.get("transcript", "")
+                    # Check if we should hang up after this response (lead was submitted)
+                    if self.should_hangup_after_next_response:
+                        print("=== LEAD SUBMITTED - HANGING UP AFTER OUTRO ===", flush=True)
+                        logger.info("Lead submitted - hanging up after 15 second delay for outro")
 
-                                # Look for the goodbye message to detect call completion
-                                if text and ("Have a great day, goodbye" in text or "have a great day, goodbye" in text.lower()):
-                                    print("=== GOODBYE MESSAGE DETECTED - CALL COMPLETE ===", flush=True)
-                                    logger.info("Goodbye message detected - will hangup after 20 second delay")
+                        # Wait 15 seconds for the outro audio to finish playing
+                        # This gives enough time for the AI's goodbye message to play
+                        await asyncio.sleep(15)
 
-                                    # Wait 20 seconds for the goodbye audio to finish playing
-                                    await asyncio.sleep(20)
+                        print("=== HANGING UP AFTER DELAY ===", flush=True)
 
-                                    print("=== HANGING UP AFTER DELAY ===", flush=True)
+                        # Send a mark event to Twilio to signal clean completion
+                        try:
+                            await self.twilio_ws.send_json({
+                                "event": "mark",
+                                "streamSid": self.stream_sid,
+                                "mark": {
+                                    "name": "call_complete"
+                                }
+                            })
+                        except Exception as e:
+                            logger.warning(f"Could not send mark event: {e}")
 
-                                    # Send a mark event to Twilio to signal clean completion
-                                    try:
-                                        await self.twilio_ws.send_json({
-                                            "event": "mark",
-                                            "streamSid": self.stream_sid,
-                                            "mark": {
-                                                "name": "call_complete"
-                                            }
-                                        })
-                                    except Exception as e:
-                                        logger.warning(f"Could not send mark event: {e}")
+                        # Close the Twilio WebSocket gracefully with normal closure code
+                        try:
+                            await self.twilio_ws.close(code=1000, reason="call_complete")
+                        except Exception as e:
+                            logger.warning(f"Error closing Twilio WebSocket: {e}")
 
-                                    # Close the Twilio WebSocket gracefully with normal closure code
-                                    try:
-                                        await self.twilio_ws.close(code=1000, reason="call_complete")
-                                    except Exception as e:
-                                        logger.warning(f"Error closing Twilio WebSocket: {e}")
-
-                                    return
+                        return
 
                 elif event_type == "input_audio_buffer.speech_started":
                     logger.info("User started speaking")

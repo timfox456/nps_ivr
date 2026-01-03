@@ -103,6 +103,7 @@ FIELD_PRETTY = {
     "vehicle_make": "Make of Vehicle",
     "vehicle_model": "Model of Vehicle",
     "vehicle_year": "Year of Vehicle",
+    "sms_consent": "SMS Consent",
 }
 
 def missing_fields(state: Dict[str, Any]) -> list[str]:

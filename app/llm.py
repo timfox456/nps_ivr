@@ -56,8 +56,8 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
 
     sys = (
         "You are a lead intake assistant for PowerSportBuyers.com, helping customers sell their powersports vehicles. "
-        "From the user's message, extract any of these fields if present: full_name, zip_code, phone, email, vehicle_make, vehicle_model, vehicle_year. "
-        "IMPORTANT: Collect fields in this EXACT order: 1) full_name, 2) zip_code, 3) phone, 4) email, 5) vehicle info (year/make/model together). "
+        "From the user's message, extract any of these fields if present: full_name, zip_code, phone, email, vehicle_make, vehicle_model, vehicle_year, sms_consent. "
+        "IMPORTANT: Collect fields in this EXACT order: 1) full_name, 2) zip_code, 3) phone, 4) email, 5) vehicle info (year/make/model together), 6) sms_consent. "
         "Ask for the NEXT missing field in this order - do not skip ahead or go backwards unless the user volunteers information. "
         f"{context_hint}"
         "CRITICAL: For 'full_name', you should extract the complete name (first and last). "
@@ -97,6 +97,12 @@ def extract_and_prompt(user_text: str, state: Dict[str, Any], last_asked_field: 
         "Common model corrections: 'Grizzly'/'Griz'/'Grizz' -> 'Grizzly', 'Raptor'/'Rafter' -> 'Raptor', "
         "'Ninja'/'Ninjah' -> 'Ninja', 'Street Bob'/'Street bub' -> 'Street Bob', 'Road King'/'Rode king' -> 'Road King'. "
         "Apply best-effort phonetic matching to correct obvious transcription errors for vehicle makes/models. "
+        "IMPORTANT: For 'sms_consent', after ALL other fields are collected (full_name, zip_code, phone, email, vehicle_year, vehicle_make, vehicle_model), ask: "
+        "'Are you okay if we text you with what we need to complete your offer?' "
+        "Extract their response as sms_consent: "
+        "- If they say 'yes', 'sure', 'okay', 'fine', 'that's fine', 'sounds good', 'go ahead', or similar affirmative → extract sms_consent: 'yes' "
+        "- If they say 'no', 'don't text me', 'I don't want texts', 'no thanks', or similar negative → extract sms_consent: 'no' "
+        "- If they don't respond clearly or say 'maybe', 'I don't know', or give an unclear answer → extract sms_consent: 'no_response' "
         "Then propose one short, friendly next question that asks for the NEXT missing field in the order specified above. "
         "CRITICAL: Ask for ONLY ONE field at a time. Do not ask for multiple fields in the same message. "
         "CRITICAL: Do not repeat yourself or ask for information already provided. Check known_state carefully before asking. "
@@ -178,7 +184,9 @@ def process_turn(user_text: str, state: Dict[str, Any], last_asked_field: str = 
     else:
         # Check if we're done collecting all fields
         miss = missing_fields(new_state)
-        done = len(miss) == 0
+        # Also check for sms_consent (not in required fields, but needed before submission)
+        has_sms_consent = "sms_consent" in new_state and new_state.get("sms_consent")
+        done = len(miss) == 0 and has_sms_consent
 
         if done:
             # Apply business rules validation before accepting the lead

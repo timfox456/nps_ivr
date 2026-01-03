@@ -16,8 +16,13 @@ from .salesforce import create_lead
 from .validation import normalize_phone, validate_phone
 from .voice_openai import TwilioMediaStreamHandler
 from .voice_openai_optimized import OptimizedRealtimeHandler
+from .logging_config import setup_logging, get_transaction_logger, LogContext
+
+# Initialize logging first, before any other code runs
+setup_logging()
 
 logger = logging.getLogger(__name__)
+transaction_logger = get_transaction_logger()
 
 app = FastAPI(title="NPA IVR & SMS Intake")
 
@@ -32,6 +37,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    logger.info("NPA IVR application started")
 
 # Utilities
 
@@ -128,11 +134,13 @@ def get_or_create_session(db: Session, channel: str, session_key: str, from_numb
         .first()
     )
     if obj:
+        logger.debug(f"Retrieved existing session {obj.id} for {channel} {session_key}")
         return obj
     obj = ConversationSession(channel=channel, session_key=session_key, from_number=from_number, to_number=to_number, state={})
     db.add(obj)
     db.commit()
     db.refresh(obj)
+    logger.info(f"Created new session {obj.id} for {channel} from {from_number}")
     return obj
 
 REQUIRED_FIELDS = [
@@ -152,12 +160,20 @@ async def twilio_sms(request: Request):
     from_number = form.get("From") or "unknown"
     to_number = form.get("To") or "unknown"
     body = form.get("Body", "").strip()
+    message_sid = form.get("MessageSid", "unknown")
+
     # Use from_number as session key so all messages from same number are in same conversation
     session_key = from_number
+
+    logger.info(f"SMS received from {from_number} - MessageSid: {message_sid}")
 
     db = SessionLocal()
     try:
         session = get_or_create_session(db, "sms", session_key, from_number, to_number)
+
+        # Use LogContext to add session metadata to all logs in this scope
+        with LogContext(session_id=session.id, channel="sms", phone=from_number):
+            logger.info(f"SMS message received: '{body[:50]}...'")  # Truncate for logging
 
         # Check how recently the session was updated (to prevent duplicate welcomes in quick succession)
         from datetime import datetime, timedelta
@@ -182,6 +198,7 @@ async def twilio_sms(request: Request):
                 pass
 
         if should_reset and not welcome_recently_sent:
+            logger.info(f"Resetting session {session.id} for SMS conversation")
             # Reset the session state
             session.state = {}
             session.last_prompt_field = "full_name"
@@ -209,6 +226,8 @@ async def twilio_sms(request: Request):
 
         # Send welcome message for first interaction (with duplicate prevention)
         if is_first_message and not welcome_recently_sent:
+            logger.info(f"New SMS conversation started - session {session.id}")
+            transaction_logger.info(f"SMS conversation started - session {session.id}")
             resp = MessagingResponse()
             resp.message("Thank you for calling National Powersport Buyers, where we make selling your powersport vehicle stress free. I am an AI assistant and I will start the process of selling your vehicle. What's your full name?")
             session.state = current_state
@@ -222,12 +241,18 @@ async def twilio_sms(request: Request):
         last_asked = session.last_prompt_field if session.last_prompt_field else None
         new_state, next_q, done = process_turn(body, current_state, last_asked)
 
+        # Log any new fields that were extracted
+        for key, value in new_state.items():
+            if key not in current_state and not key.startswith("_"):
+                logger.info(f"Field extracted: {key}={value}")
+
         # Determine which field we're asking about next for better context tracking
         if not done:
             miss = missing_fields(new_state)
             if miss:
                 session.last_prompt_field = miss[0]
                 session.last_prompt = next_q
+                logger.debug(f"Next field to collect: {miss[0]}")
 
         session.state = new_state
         flag_modified(session, "state")
@@ -261,15 +286,16 @@ async def twilio_sms(request: Request):
 
         # Send lead when done
         if done and session.status != "closed":
+            logger.info(f"SMS conversation complete - session {session.id}")
             # Check if lead was rejected by business rules
             is_rejected = new_state.get("_rejected", False)
 
             if is_rejected:
                 # Lead rejected - do not submit to NPA, save to rejected_leads table
                 session.status = "closed"
-                import logging
                 rejection_reason = new_state.get("_rejection_reason", "Unknown reason")
-                logging.info(f"Lead rejected for session {session.id}: {rejection_reason}")
+                logger.warning(f"Lead rejected for session {session.id}: {rejection_reason}")
+                transaction_logger.info(f"Lead rejected - session {session.id}: {rejection_reason}")
 
                 # Save to rejected_leads table for analytics
                 from .models import RejectedLead
@@ -289,8 +315,18 @@ async def twilio_sms(request: Request):
                 # Add channel info for lead creation
                 new_state["_channel"] = "sms"
                 try:
-                    npa_response = await create_lead(new_state)
+                    logger.info(f"Submitting lead to NPA - session {session.id}")
+
+                    # Prepare lead data for NPA API
+                    # Remove sms_consent (internal field, not sent to NPA)
+                    npa_lead_data = dict(new_state)
+                    sms_consent = npa_lead_data.pop("sms_consent", None)
+                    logger.info(f"SMS consent for session {session.id}: {sms_consent}")
+
+                    npa_response = await create_lead(npa_lead_data)
                     session.status = "closed"
+                    logger.info(f"Lead successfully submitted to NPA - session {session.id}")
+                    transaction_logger.info(f"Lead submitted successfully - session {session.id}")
 
                     # Save succeeded lead to database for reconciliation
                     from .models import SucceededLead
@@ -304,8 +340,8 @@ async def twilio_sms(request: Request):
 
                 except Exception as e:
                     # Log error but don't crash - still send response to user
-                    import logging
-                    logging.error(f"Failed to create lead, but continuing: {e}")
+                    logger.error(f"Failed to create lead for session {session.id}: {e}", exc_info=True)
+                    transaction_logger.error(f"Lead submission failed - session {session.id}: {str(e)}")
 
                     # Save failed lead to database for manual retry later
                     from .models import FailedLead
@@ -322,6 +358,8 @@ async def twilio_sms(request: Request):
 
         db.commit()
 
+        # ALWAYS send the response message (outro if done, next question if not)
+        logger.info(f"Sending SMS response to user: '{next_q[:50]}...' (done={done})")
         resp = MessagingResponse()
         resp.message(next_q)
         return PlainTextResponse(str(resp), media_type="application/xml")
@@ -771,7 +809,13 @@ async def twilio_voice_ivr_collect(request: Request):
             # Add channel info for lead creation
             new_state["_channel"] = "voice"
             try:
-                npa_response = await create_lead(new_state)
+                # Prepare lead data for NPA API
+                # Remove sms_consent (internal field, not sent to NPA)
+                npa_lead_data = dict(new_state)
+                sms_consent = npa_lead_data.pop("sms_consent", None)
+                logger.info(f"SMS consent for session {session.id}: {sms_consent}")
+
+                npa_response = await create_lead(npa_lead_data)
                 session.status = "closed"
 
                 # Save succeeded lead to database for reconciliation

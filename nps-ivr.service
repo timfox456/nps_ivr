@@ -1,0 +1,16 @@
+[Unit]
+Description=NPS IVR FastAPI Application
+After=network.target
+
+[Service]
+Type=simple
+User=tfox
+WorkingDirectory=/home/tfox/timfox456/nps_ivr
+Environment="PATH=/home/tfox/.local/bin:/home/tfox/.pyenv/shims:/home/tfox/.pyenv/bin:/home/tfox/timfox456/nps_ivr/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYENV_ROOT=/home/tfox/.pyenv"
+ExecStart=/usr/bin/bash -c 'eval "$(pyenv init -)" && /home/tfox/.local/bin/uv run uvicorn app.main:app --host 127.0.0.1 --port 8000'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
