@@ -131,8 +131,16 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
             "Content-Type": "application/json-patch+json"
         }
         async with httpx.AsyncClient(timeout=30) as client:
+            # Log request details for debugging (mask sensitive data)
+            logger.info(f"NPA API Request - URL: {url}, Username: {username[:3]}***")
+            logger.debug(f"NPA API Request payload: {data}")
+
             # Send the data directly (no wrapper needed)
             r = await client.post(url, json=data, headers=headers)
+
+            # Log response status code
+            logger.info(f"NPA API Response - Status: {r.status_code}")
+
             r.raise_for_status()
 
             # Parse response - structure may vary, log for debugging
@@ -149,13 +157,29 @@ async def create_lead(payload: Dict[str, Any]) -> Optional[str]:
                 return str(record_id)
             elif not success:
                 logger.error(f"NPA API rejected lead: {message}")
+                logger.error(f"Full API response for debugging: {response_data}")
+
+                # Create a clear error summary for reporting
+                error_summary = {
+                    "error_type": "NPA_API_REJECTION",
+                    "http_status": r.status_code,
+                    "api_success": success,
+                    "error_message": message,
+                    "api_version": response_data.get("apiInfo", {}).get("apiVersion"),
+                    "app_version": response_data.get("apiInfo", {}).get("applicationVersion"),
+                    "url": url,
+                    "username": f"{username[:3]}***"
+                }
+                logger.error(f"ERROR REPORT - {error_summary}")
                 raise Exception(f"NPA API error: {message}")
             else:
                 logger.warning(f"Lead creation uncertain - no record ID: {response_data}")
                 return None
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"NPA API error: {e.response.status_code} - {e.response.text}")
+        logger.error(f"NPA API HTTP error: Status {e.response.status_code}")
+        logger.error(f"Response body: {e.response.text}")
+        logger.error(f"Request URL: {e.request.url}")
         raise
     except Exception as e:
         logger.error(f"Failed to create NPA lead: {str(e)}")
