@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  nps-ivr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nps-ivr
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # SQLite database persistence
+      - ./data:/data
+
+    environment:
+      # Twilio Configuration
+      TWILIO_SID: ${TWILIO_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+
+      # OpenAI Configuration
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+
+      # NPA API Configuration
+      NPA_API_USERNAME: ${NPA_API_USERNAME}
+      NPA_API_PASSWORD: ${NPA_API_PASSWORD}
+      NPA_LEAD_SOURCE: ${NPA_LEAD_SOURCE:-IVR}
+
+      # Database Configuration (SQLite - NOT PostgreSQL)
+      # Container uses SQLite for simplicity and portability
+      # VM deployment uses PostgreSQL (see POSTGRES_SETUP.md)
+      DATABASE_URL: sqlite:////data/nps_ivr.db
+      USE_POSTGRES: "false"  # Must be false for container deployment
+
+      # Logging Configuration (Container mode)
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+      LOG_TO_FILE: "false"
+      ASYNC_LOGGING: "true"
+      CONTAINER: "true"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        tag: "nps-ivr"

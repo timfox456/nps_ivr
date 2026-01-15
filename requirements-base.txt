@@ -1,5 +1,5 @@
-# Full requirements for NPS IVR (VM version with PostgreSQL support)
-# For Docker/SQLite deployment, use requirements-base.txt instead
+# Base requirements for NPS IVR (SQLite version)
+# Use this for Docker containers and SQLite deployments
 
 fastapi==0.112.2
 uvicorn[standard]==0.30.6
@@ -14,6 +14,3 @@ python-multipart==0.0.12
 pytest==8.3.2
 pytest-asyncio==0.24.0
 websockets==15.0.1
-
-# PostgreSQL support (only needed for VM deployment)
-psycopg2-binary==2.9.9
