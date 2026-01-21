@@ -224,8 +224,8 @@ async def twilio_sms(request: Request):
             if caller_phone:
                 current_state["phone"] = caller_phone
 
-        # Send welcome message for first interaction (with duplicate prevention)
-        if is_first_message and not welcome_recently_sent:
+        # Send welcome message for first interaction (always send for truly first messages)
+        if is_first_message:
             logger.info(f"New SMS conversation started - session {session.id}")
             transaction_logger.info(f"SMS conversation started - session {session.id}")
             resp = MessagingResponse()
